@@ -8,6 +8,7 @@ Needs clang on PATH (MSYS2 UCRT64). Exit status 0 when everything matches.
 """
 import argparse
 import os
+import platform
 import random
 import re
 import struct
@@ -227,10 +228,14 @@ def main():
     with open(os.path.join(work, 'pattern.bin'), 'wb') as f:
         f.write(PATTERN)
     exe = os.path.join(work, 'harness.exe')
-    cmd = ['clang', '-O1', '-fno-strict-aliasing', '-ffp-contract=off', '-march=x86-64-v3', '-w',
+    # (the game code's flags for this CPU, as the Makefile's GENARCH / GENFLAGS)
+    cpu = ['-march=armv8-a', '-fsigned-char'] if platform.machine() in ('aarch64', 'arm64') else ['-march=x86-64-v3']
+    cmd = ['clang', '-O1', '-fno-strict-aliasing', '-ffp-contract=off', *cpu, '-w',
            f'-I{os.path.join(ROOT, "runtime")}', '-o', exe, os.path.join(HERE, 'test_harness.c'),
            os.path.join(work, 'tests.c'), os.path.join(ROOT, 'runtime', 'simd_int.c'),
            os.path.join(ROOT, 'runtime', 'neon.c')] + ([os.path.join(ROOT, 'runtime', 'interp.c')] if args.interp else [])
+    if os.name != 'nt':
+        cmd.append('-lm')  # (the tests' sqrtf / sqrt: libm is a library of its own on Linux)
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         print(r.stderr[:6000], file=sys.stderr)
