@@ -9,6 +9,7 @@
 
 #include "vk.h"
 #include "../astc.h"
+#include "../bcn.h"
 
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
@@ -159,6 +160,29 @@ static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
     return (p.optimalTilingFeatures & want) == want;
 }
 
+// A BC format the GPU can't sample: the format its blocks are decoded into on upload (bcn.c), its kind (1-7) and
+// whether it is signed; 0 for any other format.
+static VkFormat bc_decoded_format(VkFormat f, uint8_t *kind, bool *snorm) {
+    *snorm = false;
+    switch (f) {
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: *kind = 1; return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: *kind = 1; return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_BC2_UNORM_BLOCK: *kind = 2; return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_BC2_SRGB_BLOCK: *kind = 2; return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_BC3_UNORM_BLOCK: *kind = 3; return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_BC3_SRGB_BLOCK: *kind = 3; return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_BC4_UNORM_BLOCK: *kind = 4; return VK_FORMAT_R8_UNORM;
+    case VK_FORMAT_BC4_SNORM_BLOCK: *kind = 4, *snorm = true; return VK_FORMAT_R8_SNORM;
+    case VK_FORMAT_BC5_UNORM_BLOCK: *kind = 5; return VK_FORMAT_R8G8_UNORM;
+    case VK_FORMAT_BC5_SNORM_BLOCK: *kind = 5, *snorm = true; return VK_FORMAT_R8G8_SNORM;
+    case VK_FORMAT_BC6H_UFLOAT_BLOCK: *kind = 6; return VK_FORMAT_R16G16B16A16_SFLOAT;
+    case VK_FORMAT_BC6H_SFLOAT_BLOCK: *kind = 6, *snorm = true; return VK_FORMAT_R16G16B16A16_SFLOAT;
+    case VK_FORMAT_BC7_UNORM_BLOCK: *kind = 7; return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_BC7_SRGB_BLOCK: *kind = 7; return VK_FORMAT_R8G8B8A8_SRGB;
+    default: *kind = 0; return VK_FORMAT_UNDEFINED;
+    }
+}
+
 // ---- wide render targets
 // The game renders into RGBA8 targets only. A night sky leaves the scene pass a few codes above black (here R 5-18,
 // G 12-28, B 15-32 over the whole sky) and the post passes after it (exposure, colour grading) brighten it several
@@ -246,15 +270,29 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkFormat vf = mf.vf;
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     b->astc_bw = b->astc_bh = 0;
-    if (!format_supports(vf, need)) {
+    b->bc = 0;
+    static int soft_bc = -1;  // (debug) MHGU_SOFT_BC=1: BC decoded on the CPU even when the GPU has it (tests bcn.c)
+    if (soft_bc < 0) soft_bc = getenv("MHGU_SOFT_BC") && atoi(getenv("MHGU_SOFT_BC")) > 0;
+    uint8_t bc_kind;
+    bool bc_snorm;
+    if (!format_supports(vf, need) || (soft_bc && bc_decoded_format(vf, &bc_kind, &bc_snorm))) {
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
         const FormatInfo *fi = t->layout.fmt;
+        VkFormat bc_vf = bc_decoded_format(vf, &b->bc, &b->bc_snorm);
         if (astc && fi && fi->bpb == 16) {  // decoded on the CPU into an RGBA8 image of the same colour space
             b->astc_bw = fi->bw;
             b->astc_bh = fi->bh;
             b->astc_srgb = t->format >= 0x87;
             vf = b->astc_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        } else if (bc_vf && fi && fi->bw == 4 && fi->bh == 4) {  // BC: decoded on the CPU (bcn.c)
+            static bool logged;
+            if (!logged) {
+                logged = true;
+                LOG("[vk] BC textures are decoded on the CPU (%s)\n", soft_bc ? "MHGU_SOFT_BC" : "the GPU has no BC formats");
+            }
+            vf = bc_vf;
         } else {
+            b->bc = 0;
             static int nlog;
             if (nlog++ < 20) LOG("[vk] format %d (nvn %#x) not supported: RGBA8 instead\n", vf, t->format);
             vf = VK_FORMAT_R8G8B8A8_UNORM;
@@ -512,7 +550,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (b->uploaded && h != b->data_hash) b->dynamic = true;
     b->data_hash = h;
     b->uploaded = true;
-    if (b->format != mf.vf && !b->astc_bw) return;  // unsupported format: nothing sensible to copy
+    if (b->format != mf.vf && !b->astc_bw && !b->bc) return;  // unsupported format: nothing sensible to copy
     VkCommandBuffer cb = vk_upload_cmd();
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers > b->layers && b->depth == 1) layers = b->layers;
@@ -529,6 +567,19 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                 else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, 16, l.block_height_log2, l.block_depth_log2);
                 VkSpan s = vk_transient((uint64_t)l.w * l.h * 4, 16);
                 astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, s.ptr);
+                free(blocks);
+                VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
+                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
+                                        .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
+                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+                continue;
+            }
+            if (b->bc) {  // blocks -> linear block rows -> decoded texels (bcn.c), as ASTC above
+                uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * fi->bpb);
+                if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * fi->bpb, src + (uint64_t)y * t->stride, l.wb * fi->bpb);
+                else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, fi->bpb, l.block_height_log2, l.block_depth_log2);
+                VkSpan s = vk_transient((uint64_t)l.w * l.h * bcn_texel_size(b->bc), 16);
+                bcn_decode(b->bc, b->bc_snorm, blocks, l.w, l.h, s.ptr);
                 free(blocks);
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
