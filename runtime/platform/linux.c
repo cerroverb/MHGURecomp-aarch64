@@ -307,16 +307,51 @@ static const char *sig_name(int sig) {
     }
 }
 
+// The faulting thread's registers, per host CPU: pc, stack pointer, return address, and whether the access was a write.
+#if defined(__aarch64__)
+// The kernel puts the fault's ESR in a record of the signal frame's __reserved area (Linux
+// arch/arm64/include/uapi/asm/sigcontext.h: struct _aarch64_ctx {u32 magic, size}, ESR_MAGIC, struct esr_context);
+// WnR (bit 6) is set for a write. (glibc's <signal.h> may already define ESR_MAGIC through <asm/sigcontext.h>.)
+#ifndef ESR_MAGIC
+#define ESR_MAGIC 0x45535201u
+#endif
+static bool fault_write(const ucontext_t *ctx) {
+    const unsigned char *p = (const unsigned char *)ctx->uc_mcontext.__reserved, *e = p + sizeof ctx->uc_mcontext.__reserved;
+    while (p + 8 <= e) {
+        uint32_t magic, size;
+        memcpy(&magic, p, 4);
+        memcpy(&size, p + 4, 4);
+        if (!magic || size < 8) break;
+        if (magic == ESR_MAGIC && size >= 16) {
+            uint64_t esr;
+            memcpy(&esr, p + 8, 8);
+            return (esr >> 6) & 1;
+        }
+        p += size;
+    }
+    return false;
+}
+static uint64_t fault_pc(const ucontext_t *ctx) { return ctx->uc_mcontext.pc; }
+static uint64_t fault_sp(const ucontext_t *ctx) { return ctx->uc_mcontext.sp; }
+static uint64_t fault_lr(const ucontext_t *ctx) { return ctx->uc_mcontext.regs[30]; }
+#else
+static bool fault_write(const ucontext_t *ctx) { return (ctx->uc_mcontext.gregs[REG_ERR] & 2) != 0; }
+static uint64_t fault_pc(const ucontext_t *ctx) { return (uint64_t)ctx->uc_mcontext.gregs[REG_RIP]; }
+static uint64_t fault_sp(const ucontext_t *ctx) { return (uint64_t)ctx->uc_mcontext.gregs[REG_RSP]; }
+static uint64_t fault_lr(const ucontext_t *ctx) {  // (the return address on top of the stack, if it can be read)
+    uint64_t sp = fault_sp(ctx), end = 0;
+    return plat_committed(sp, &end) && end - sp >= 8 ? *(const uint64_t *)(uintptr_t)sp : 0;
+}
+#endif
+
 static void fault_handler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *ctx = (ucontext_t *)uc;
     uint64_t fa = si && si->si_addr ? (uint64_t)(uintptr_t)si->si_addr : 0;
     if ((sig == SIGSEGV || sig == SIGBUS) && lazy_commit(fa)) {  // (a guest page first touched: back it, resume)
-        if (plat_touch_hook) plat_touch_hook(fa - g_lo, (ctx->uc_mcontext.gregs[REG_ERR] & 2) != 0);
+        if (plat_touch_hook) plat_touch_hook(fa - g_lo, fault_write(ctx));
         return;
     }
-    uint64_t pc = (uint64_t)ctx->uc_mcontext.gregs[REG_RIP];
-    uint64_t sp = (uint64_t)ctx->uc_mcontext.gregs[REG_RSP], lr = 0, end = 0;
-    if (plat_committed(sp, &end) && end - sp >= 8) lr = *(const uint64_t *)(uintptr_t)sp;
+    uint64_t pc = fault_pc(ctx), lr = fault_lr(ctx);
     char what[80];
     snprintf(what, sizeof what, "%s (code %d, addr %llx)", sig_name(sig), si ? si->si_code : 0,
              (unsigned long long)fa);

@@ -1,9 +1,10 @@
 """Pack a build folder into its release archive, for GitHub (make dist).
 
-usage: python tools/dist.py <build dir> <out dir> <windows|linux> <version> [--bonus <file>]
+usage: python tools/dist.py <build dir> <out dir> <windows|linux|linux-arm64> <version> [--bonus <file>]
 
-Windows: <out>/Windows-MHGURecomp.<version>.zip; Linux: <out>/Linux-MHGURecomp.<version>.tar.gz (the programs
-keep their executable permission). Inside, one folder of the same name holds what a player copies: the game, its code
+Windows: <out>/Windows-MHGURecomp.<version>.zip; Linux: <out>/Linux-MHGURecomp.<version>.tar.gz, 64-bit ARM Linux:
+<out>/LinuxArm64-MHGURecomp.<version>.tar.gz (the programs keep their executable permission; each updater takes only
+its own: updater/updater.c ASSET_PREFIXES). Inside, one folder of the same name holds what a player copies: the game, its code
 library, the updater, the DLLs (Windows), pipelines.list, licenses/, bonus/system (--bonus: the donor save of the free downloads) and
 the empty data/, mods/ and cheats/ folders, with a note in data/ of what goes there. Nothing else of the build folder:
 not its game files, mods, settings, caches or log. The updater (updater/updater.c) installs the same archive, leaving
@@ -17,6 +18,7 @@ import tarfile
 import time
 import zipfile
 
+TOPS = {'windows': 'Windows', 'linux': 'Linux', 'linux-arm64': 'LinuxArm64'}  # (the archive's name, per platform)
 DATA_NOTE = ('Put your own dump of Monster Hunter Generations Ultimate 1.4.0 here: the exefs and romfs folders\n'
              '(data/exefs/main, data/romfs/...).\n')
 
@@ -64,12 +66,12 @@ def main():
         i = args.index('--bonus')
         bonus = args[i + 1]
         del args[i:i + 2]
-    if len(args) != 4 or args[2] not in ('windows', 'linux'):
+    if len(args) != 4 or args[2] not in TOPS:
         sys.exit(__doc__)
     build, out_dir, platform, version = args
     check_version(build, platform, version)
     # (Linux-: up to 0.11.4 ArchLinux-, when it needed Arch's SDL3 and shaderc; every updater takes both)
-    top = ('Windows' if platform == 'windows' else 'Linux') + '-MHGURecomp'
+    top = TOPS[platform] + '-MHGURecomp'
     name = f'{top}.{version}' + ('.zip' if platform == 'windows' else '.tar.gz')
     entries = files(build, platform)
     if bonus:

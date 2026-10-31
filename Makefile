@@ -18,7 +18,13 @@ B        ?= build
 O        ?= obj
 CC       := clang
 CXX      := clang++
+# the compiler's target CPU: x86_64, aarch64
+ARCH     := $(firstword $(subst -, ,$(shell $(CC) -dumpmachine)))
+ifeq ($(ARCH),aarch64)
+GENARCH  ?= -march=armv8-a    # any 64-bit ARM CPU
+else
 GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA (Haswell or newer)
+endif
 GENFLAGS := -O1 -fno-strict-aliasing -ffp-contract=off -fno-math-errno -Wno-return-type -Wno-unused-label \
             -Wno-parentheses-equality -Wno-unused-value -fvisibility=hidden -Iruntime $(GENARCH)
 
@@ -142,6 +148,11 @@ UPDATER  := $(B)/mhgurecomp-updater
 # (libcurl: opened at run time, updater/http.c; -lm for runtime/platform/linux_glibc.c: SDL_LIBS has it only with
 # the bundled SDL3)
 UPD_LDFLAGS := -fuse-ld=lld $(SDL_LIBS) -lz -ldl -lm $(GLIBC_WRAP_FLAGS)
+endif
+# 64-bit ARM: plain char is unsigned there and signed on x86-64, which the program's C code is written for
+ifeq ($(ARCH),aarch64)
+OSFLAGS  += -fsigned-char
+GENFLAGS += -fsigned-char
 endif
 
 # GAMELIB_ID: what the game code library is compiled against. A library with another id is refused at startup.
@@ -464,7 +475,7 @@ BONUS ?= $(wildcard $(B)/bonus/system)
 dist: all
 	@echo '$(VERSION)' | grep -Eq '^[0-9]+(\.[0-9]+)*$$' || \
 	  { echo "dist: '$(VERSION)' is not a release version: make dist VERSION=<the release's tag, e.g. 0.10.4>"; exit 1; }
-	$(PY) tools/dist.py $(B) $(DIST) $(PLATFORM) $(VERSION) $(if $(BONUS),--bonus "$(BONUS)")
+	$(PY) tools/dist.py $(B) $(DIST) $(PLATFORM)$(if $(filter aarch64,$(ARCH)),-arm64) $(VERSION) $(if $(BONUS),--bonus "$(BONUS)")
 
 .PHONY: all gen test-lift runtime-objs clean bundle data licenses pipelist dist FORCE
 
