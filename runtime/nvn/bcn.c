@@ -22,7 +22,8 @@ uint32_t bcn_texel_size(int kind) {
 void bcn_decode(int kind, bool snorm, const uint8_t *blocks, uint32_t width, uint32_t height, uint8_t *out) {
     uint32_t bsize = kind == 1 || kind == 4 ? 8 : 16, ts = bcn_texel_size(kind);
     uint32_t wb = (width + 3) / 4, hb = (height + 3) / 4;
-    uint8_t tmp[4 * 4 * 8];
+    uint16_t tmp16[4 * 4 * 4];  // (one decoded block of the largest texel, RGBA16F; uint16_t for BC6H's alignment)
+    uint8_t *tmp = (uint8_t *)tmp16;
     uint16_t rgb[4 * 4 * 3];
     for (uint32_t by = 0; by < hb; by++) {
         for (uint32_t bx = 0; bx < wb; bx++) {
@@ -36,10 +37,9 @@ void bcn_decode(int kind, bool snorm, const uint8_t *blocks, uint32_t width, uin
             case 5: bcdec_bc5(b, tmp, pitch, snorm); break;
             case 6: {  // RGB half floats -> RGBA16F with alpha 1.0
                 bcdec_bc6h_half(b, rgb, 4 * 3, snorm);
-                uint16_t *t = (uint16_t *)tmp;
                 for (int i = 0; i < 16; i++) {
-                    t[i * 4] = rgb[i * 3], t[i * 4 + 1] = rgb[i * 3 + 1], t[i * 4 + 2] = rgb[i * 3 + 2];
-                    t[i * 4 + 3] = 0x3C00;
+                    tmp16[i * 4] = rgb[i * 3], tmp16[i * 4 + 1] = rgb[i * 3 + 1], tmp16[i * 4 + 2] = rgb[i * 3 + 2];
+                    tmp16[i * 4 + 3] = 0x3C00;
                 }
                 break;
             }

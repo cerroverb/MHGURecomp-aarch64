@@ -275,10 +275,10 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (soft_bc < 0) soft_bc = getenv("MHGU_SOFT_BC") && atoi(getenv("MHGU_SOFT_BC")) > 0;
     uint8_t bc_kind;
     bool bc_snorm;
-    if (!format_supports(vf, need) || (soft_bc && bc_decoded_format(vf, &bc_kind, &bc_snorm))) {
+    VkFormat bc_vf = bc_decoded_format(vf, &bc_kind, &bc_snorm);
+    if (!format_supports(vf, need) || (soft_bc && bc_vf)) {
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
         const FormatInfo *fi = t->layout.fmt;
-        VkFormat bc_vf = bc_decoded_format(vf, &b->bc, &b->bc_snorm);
         if (astc && fi && fi->bpb == 16) {  // decoded on the CPU into an RGBA8 image of the same colour space
             b->astc_bw = fi->bw;
             b->astc_bh = fi->bh;
@@ -290,9 +290,10 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                 logged = true;
                 LOG("[vk] BC textures are decoded on the CPU (%s)\n", soft_bc ? "MHGU_SOFT_BC" : "the GPU has no BC formats");
             }
+            b->bc = bc_kind;
+            b->bc_snorm = bc_snorm;
             vf = bc_vf;
         } else {
-            b->bc = 0;
             static int nlog;
             if (nlog++ < 20) LOG("[vk] format %d (nvn %#x) not supported: RGBA8 instead\n", vf, t->format);
             vf = VK_FORMAT_R8G8B8A8_UNORM;

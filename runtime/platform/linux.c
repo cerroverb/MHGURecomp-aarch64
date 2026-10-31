@@ -307,35 +307,14 @@ static const char *sig_name(int sig) {
     }
 }
 
-// The faulting thread's registers, per host CPU: pc, stack pointer, return address, and whether the access was a write.
+// The faulting thread's registers, per host CPU: pc, return address, and whether the access was a write (1 / 0;
+// -1 unknown, as forge_guest_fault takes it).
 #if defined(__aarch64__)
-// The kernel puts the fault's ESR in a record of the signal frame's __reserved area (Linux
-// arch/arm64/include/uapi/asm/sigcontext.h: struct _aarch64_ctx {u32 magic, size}, ESR_MAGIC, struct esr_context);
-// WnR (bit 6) is set for a write. (glibc's <signal.h> may already define ESR_MAGIC through <asm/sigcontext.h>.)
-#ifndef ESR_MAGIC
-#define ESR_MAGIC 0x45535201u
-#endif
-static bool fault_write(const ucontext_t *ctx) {
-    const unsigned char *p = (const unsigned char *)ctx->uc_mcontext.__reserved, *e = p + sizeof ctx->uc_mcontext.__reserved;
-    while (p + 8 <= e) {
-        uint32_t magic, size;
-        memcpy(&magic, p, 4);
-        memcpy(&size, p + 4, 4);
-        if (!magic || size < 8) break;
-        if (magic == ESR_MAGIC && size >= 16) {
-            uint64_t esr;
-            memcpy(&esr, p + 8, 8);
-            return (esr >> 6) & 1;
-        }
-        p += size;
-    }
-    return false;
-}
+static int fault_write(const ucontext_t *ctx) { (void)ctx; return -1; }
 static uint64_t fault_pc(const ucontext_t *ctx) { return ctx->uc_mcontext.pc; }
-static uint64_t fault_sp(const ucontext_t *ctx) { return ctx->uc_mcontext.sp; }
 static uint64_t fault_lr(const ucontext_t *ctx) { return ctx->uc_mcontext.regs[30]; }
 #else
-static bool fault_write(const ucontext_t *ctx) { return (ctx->uc_mcontext.gregs[REG_ERR] & 2) != 0; }
+static int fault_write(const ucontext_t *ctx) { return (ctx->uc_mcontext.gregs[REG_ERR] & 2) != 0; }
 static uint64_t fault_pc(const ucontext_t *ctx) { return (uint64_t)ctx->uc_mcontext.gregs[REG_RIP]; }
 static uint64_t fault_sp(const ucontext_t *ctx) { return (uint64_t)ctx->uc_mcontext.gregs[REG_RSP]; }
 static uint64_t fault_lr(const ucontext_t *ctx) {  // (the return address on top of the stack, if it can be read)

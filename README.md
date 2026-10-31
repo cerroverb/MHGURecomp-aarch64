@@ -423,8 +423,8 @@ native build on an ARM machine needs nothing extra): the game code is compiled w
 (Raspberry Pi's V3DV, some Mali GPUs) get those textures decoded on the CPU when they are uploaded
 (`runtime/nvn/bcn.c`, with [bcdec](https://github.com/iOrange/bcdec)); `MHGU_SOFT_BC=1` does that on any GPU, to test
 it. So far this was tested by cross-compiling on x86-64 (clang `--target=aarch64-linux-gnu`) and running under
-qemu-aarch64: `make test-lift` passes for `main` and `sdk`, and the game starts and reaches a quest with the null
-renderer. It has not run on ARM hardware yet.
+qemu-aarch64: `tools/test_lift.py`, with its harness built for aarch64, passes for `main` and `sdk`, and the game starts
+and reaches a quest with the null renderer. It has not run on ARM hardware yet.
 
 From Windows, the Linux build can be made in WSL with Arch Linux (`wsl --install -d archlinux`), straight from the
 Windows checkout, into its own folders so the Windows build is left alone:
