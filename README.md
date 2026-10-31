@@ -30,7 +30,8 @@ Status: fully playable, but there may be some bugs. I've played a dozen hunts wi
 
 - OS: Windows 10/11 64-bit, or Linux 64-bit with glibc 2.39 or newer (Ubuntu 24.04, Linux Mint 22, Debian 13,
   SteamOS 3.7, Arch, Fedora 40 or newer) and a Vulkan driver
-- CPU: Any CPU from 2014 or newer (needs AVX2 support)
+- CPU: Any CPU from 2014 or newer (needs AVX2 support); 64-bit ARM on Linux is experimental (see Building from
+  source, Linux)
 - GPU: Any GPU from 2016 or newer (needs Vulkan 1.2 support), and at least 1GB of VRAM
 - RAM: 4GB
 - The game files for Monster Hunter Generations Ultimate, version 1.4.0. You can extract these from your Switch or Ryujinx with patches pre-applied.
@@ -355,7 +356,8 @@ the game's, or the build folder's settings, caches or mods. `make dist` prints e
 Upload both archives to a GitHub release whose tag is exactly that version (`0.10.4`, no `v`), as a normal release,
 not a pre-release. The updater only looks at GitHub's "latest" release, compares its tag with its own version as
 numbers (0.10.10 is newer than 0.10.9), and picks the asset starting with `Windows-` (`.zip`) or `Linux-`
-(`.tar.gz`, else `.zip`; `ArchLinux-`, the name up to 0.11.4, as well). GitHub records each upload's SHA-256, which the updater checks. To hold a broken release
+(`.tar.gz`, else `.zip`; `ArchLinux-`, the name up to 0.11.4, as well); the 64-bit ARM Linux build's updater takes
+`LinuxArm64-` only. GitHub records each upload's SHA-256, which the updater checks. To hold a broken release
 back, make it a draft or pre-release: the updater then sees the previous one as the latest.
 
 The version comes from `git describe --tags`. A build that isn't exactly a tag (`0.10.3-4-gabc1234`) never updates
@@ -410,6 +412,19 @@ code and `data/` as hard links to your game files, nothing else; the ini, caches
 them when it runs (`MHGU_HOME=<folder>` puts those there instead). Saves go to
 `$XDG_DATA_HOME/MHGURecomp/save`, default `~/.local/share/MHGURecomp/save` — the folder the Windows build
 keeps them in under `%APPDATA%`, same layout, so moving a save across is copying `save_0`.
+
+#### 64-bit ARM (aarch64)
+
+The same Makefile builds for 64-bit ARM Linux when the compiler targets it (`ARCH` follows `$(CC) -dumpmachine`, so a
+native build on an ARM machine needs nothing extra): the game code is compiled with `-march=armv8-a` instead of
+`x86-64-v3`, plain `char` stays signed as on x86-64 (`-fsigned-char`), the guest window sits at 64 GB instead of 1 TB
+(arm64 kernels with 39-bit addresses give a process only 512 GB), and `make dist` names the archive
+`LinuxArm64-MHGURecomp.<version>.tar.gz`, which only the ARM build's updater installs. GPUs without BC texture formats
+(Raspberry Pi's V3DV, some Mali GPUs) get those textures decoded on the CPU when they are uploaded
+(`runtime/nvn/bcn.c`, with [bcdec](https://github.com/iOrange/bcdec)); `MHGU_SOFT_BC=1` does that on any GPU, to test
+it. So far this was tested by cross-compiling on x86-64 (clang `--target=aarch64-linux-gnu`) and running under
+qemu-aarch64: `make test-lift` passes for `main` and `sdk`, and the game starts and reaches a quest with the null
+renderer. It has not run on ARM hardware yet.
 
 From Windows, the Linux build can be made in WSL with Arch Linux (`wsl --install -d archlinux`), straight from the
 Windows checkout, into its own folders so the Windows build is left alone:
