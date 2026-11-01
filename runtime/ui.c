@@ -18,6 +18,17 @@ static SDL_AtomicInt requested_action, action_failed;
 void ui_capture_launch_args(int argc, char **argv) { launch_argc = argc; launch_argv = argv; }
 void ui_request_action(bool restart) { SDL_SetAtomicInt(&requested_action, restart ? 2 : 1); }
 bool ui_action_failed(void) { return SDL_SetAtomicInt(&action_failed, 0) != 0; }
+
+#ifndef _WIN32
+#include <signal.h>
+// A termination signal (SIGTERM from a session closing the game: gamescope's or Steam's "exit game", a desktop's
+// logout, kill; SIGINT: Ctrl+C) quits as ui_request_action does, without ConfirmExit's question, which the player
+// can't answer then. SDL would turn it into SDL_EVENT_QUIT, the window's close button (ui_init: its handlers off).
+static void on_terminate(int sig) {
+    (void)sig;
+    ui_request_action(false);  // (an atomic store: safe in a signal handler)
+}
+#endif
 static bool restart_application(void) {
     char exe[4096], wait[80];
     if (!plat_exe_path(exe, sizeof exe)) return false;
@@ -96,6 +107,11 @@ static void set_fullscreen(bool on) {
 }
 
 void ui_init(void) {
+#ifndef _WIN32
+    SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");  // (termination signals: on_terminate)
+    signal(SIGTERM, on_terminate);
+    signal(SIGINT, on_terminate);
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO)) FATAL("SDL_Init: %s\n", SDL_GetError());
     int sdl = SDL_GetVersion();
 #ifdef MHGU_SDL_BUNDLED
