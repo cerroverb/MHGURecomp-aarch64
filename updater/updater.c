@@ -44,6 +44,10 @@
 #endif
 #endif
 #define LATEST_URL "https://api.github.com/repos/morerokk/MHGURecomp/releases/latest"
+#if defined(__aarch64__) && !defined(_WIN32)  // (the 64-bit ARM builds are released on this fork)
+#undef LATEST_URL
+#define LATEST_URL "https://api.github.com/repos/cerroverb/MHGURecomp/releases/latest"
+#endif
 
 // what the archive must never write (first path component, any case): the player's
 static const char *const KEEP[] = {"data", "mods", "cheats", "bonus", "cache", "shots", "save", "update",

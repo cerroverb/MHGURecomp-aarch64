@@ -432,7 +432,8 @@ numbers (0.10.10 is newer than 0.10.9), and picks the asset starting with `Windo
 back, make it a draft or pre-release: the updater then sees the previous one as the latest.
 
 A 64-bit ARM Linux build is packed as `LinuxArm64-MHGURecomp.<version>.tar.gz` (`tools/dist.py` reads the CPU from
-the built program). Its updater takes only that name, and the x86-64 updater never takes it.
+the built program). Its updater takes only that name, and the x86-64 updater never takes it. The ARM updater asks
+this fork's releases (cerroverb/MHGURecomp), where the ARM builds are published; `MHGU_UPDATE_API` still overrides it.
 
 The version comes from `git describe --tags`. A build that isn't exactly a tag (`0.10.3-4-gabc1234`) never updates
 itself, so a development build is never replaced by a release (`--update-force` overrides that). Options for testing
