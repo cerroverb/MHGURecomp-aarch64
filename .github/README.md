@@ -33,8 +33,6 @@ Everything else (settings, mods, cheats, controls) works as described in
 
 Tested on an AYN Odin 3 Ultra running Armada Linux.
 
-## What differs from upstream
-
 The ARM code itself is upstream's, shared with its Android build. This fork adds only what Linux on ARM needs:
 
 - the Makefile picks ARM compiler flags when the compiler targets aarch64 (`-march=armv8-a`, `-fsigned-char`);
@@ -43,8 +41,6 @@ The ARM code itself is upstream's, shared with its Android build. This fork adds
 
 The branch with these changes is [`aarch64-linux-v2`](https://github.com/cerroverb/MHGURecomp/tree/aarch64-linux-v2);
 its own README has the full upstream documentation, including how to build (section "64-bit ARM (aarch64)").
-
-## Problems
 
 ARM-specific problems: open an issue here. Everything else is upstream's: please report it
 [there](https://github.com/morerokk/MHGURecomp/issues).
