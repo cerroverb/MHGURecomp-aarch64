@@ -76,7 +76,8 @@ Fixed on the way (2026-10-20):
 - Performance: device-local vertex cache refreshed per written page (page write tracking): guest copies went from
   ~880 MB/s to ~8 MB/s; mailbox presentation (FIFO with 2 images held the game at ~26 fps).
 - Settings: mhgurecomp.ini in the game folder (runtime/config.c; written with the defaults when missing): Mode = Fullscreen /
-  Windowed / Borderless, Resolution = WxH or Desktop, RenderResolution = Auto or WxH, FPS = 30..240, VSync. Alt+Enter
+  Windowed / Borderless, Resolution = WxH or Desktop (the screen's real pixels: on a scaled Wayland desktop, SDL's desktop
+  size x its pixel density), RenderResolution = Auto or WxH, FPS = 30..240, VSync. Alt+Enter
   toggles windowed / full screen. The 3D resolution is the game's own docked render size (main 0xdbcd34 / 0xdbcd38,
   `mov` 1920 / 1080, the constants the 4K-2K mod patches): tools/gen.py PATCHES makes those two instructions read
   g_render_size. Overrides for test runs: MHGU_CONFIG=<file>, MHGU_WINDOW=WxH (windowed), MHGU_RENDER=WxH,
@@ -99,18 +100,35 @@ Fixed on the way (2026-10-20):
   get the player's anti-aliasing (models_aa):
   - MSAA: the first depth-testing draw (or depth clear) into it copies the picture, and the depth the models test
     against unless cleared, into every sample of the multisampled companions (ms_expand; without
-    VK_EXT_shader_stencil_export the stencil starts at 0, as vk_ms_resolve drops it), and the rest of the frame's draws
-    into it stay there: the 2D draws after the models shaded per sample (else the seams between their quads show), so
-    a preview that switches between models and 2D costs one copy and one resolve a frame. Needs sampleRateShading.
+    VK_EXT_shader_stencil_export the stencil starts at 0, as vk_ms_resolve drops it). The 2D draws around the models
+    stay without MSAA. Only a frame that alternates models and 2D keeps its 2D after the first model in the samples,
+    from the frame after one (models_2d_in_samples), shaded per sample (else the seams between their quads show), so
+    it costs one copy and one resolve a frame. Needs sampleRateShading. Measured on a Radeon iGPU, MSAA 4x, FXAA on,
+    1920x1080, Forge Armor: 33 -> 64 FPS without per-sample 2D (the Smithy room behind it: 67).
   - FXAA: the picture is copied before each run of model draws and after it, and FXAA 3.11 ("fxaa.frag.models", luma
     from the colour) is drawn over it only where the models changed it and next to that (models_fxaa_end), so the 2D
-    around them stays sharp. Both FXAA modes: the game's own FXAA shader only runs in its pass.
+    around them stays sharp, and only in the area the run's draws could reach (a preview's panel, 551x590 at 1080p:
+    the test reads 18 texels per pixel; on that iGPU, MSAA off, 78 -> 90 FPS). Both FXAA modes: the game's own FXAA
+    shader only runs in its pass.
   - FSR, or anti-aliasing off: none. FSR runs at its start of the HUD, before them, and never sees them.
   The 3D scene's passes (before the FXAA pass) keep their rules.
 - FXAA (settings FXAA = On / Off): the game's FXAA pass is recognised by its fragment shader's code hash
   (FXAA_FS_HASH, exec.c) and becomes a copy of its input when off.
   FXAAMode = 3_11 draws FXAA 3.11 Quality there instead (exec.c fxaa_311, shaders.c "fxaa.frag": preset 39, no
   sub-pixel blur, edge thresholds 0.063 / 0.0312, so textures stay sharp).
+  FXAAMode = Original draws shaders.c "fxaa.frag.game", the game's shader written out by hand (exec.c compile_program;
+  there and not at the translation, so sources already in programs.src get it too). The translation runs a loop over a
+  switch with 24 registers and a stack for every pixel. MHGU_CONTROL "gpuprof" now names the FXAA pass. The town at
+  1080p (MHGU_QUICKHUNT=town, about 25 s a run), the pass's GPU time, then the frame's and the frame rate:
+  - Radeon iGPU, Original: 2.97 -> 1.54 ms, 12.7 -> 11.3 ms, 71 -> 79 FPS (FXAA off: 0.26 ms, 10.0 ms, 88 FPS).
+  - Radeon iGPU, 3_11: 3.42 -> 2.75 ms, 13.2 -> 12.4 ms, 68 -> 72 FPS (two gathers, and no constant array read by index).
+  - RTX 5070 Ti, Original: 0.052 -> 0.035 ms of a 0.55 ms frame, too little to notice.
+  Two gathers replace five reads for the pixels that end at the range test: that path costs 0.45 ms on the iGPU. The
+  rest is edge pixels (31% of this town) searching along the edge. Original's picture is bit-identical: the old and new
+  code ran on the same frame with the output set to their difference x255 (MHGU_GLSL_OVERRIDE), all zero on both GPUs,
+  in the town, at a 1280x720 render size and in quest 101. The same test for 3_11 (town, both GPUs): also all zero. The
+  game's fma()s and the order of its sums had to stay: without them 0.15% of pixels differed, as exact ties go by rounding.
+  Not looking again at a search side that hasn't moved gives the same picture, but took 1.75 ms instead of 1.54 on the iGPU.
 - Frame rate: the settings' FPS or MHGU_FRAMERATE (default 60, 30..240) writes the engine's target fps (float at +0x3c of the object in
   global 0x2326764, the field theboy181's 60fps patch sets) each frame. Above the monitor's refresh rate it needs
   VSync = Off: see "Frame rates above 60". MHGU_VSYNC=0/1 overrides the setting: no vsync / classic vsync.
@@ -206,7 +224,9 @@ Plan and security notes: docs/research/internet-hubs.md.
   "Check hub server" row: LIST with the server / key being edited (ldn_hub_check, a thread), showing "Online, N ms,
   N hub(s)" or the failure; before a check it shows the last state the game's own searches / hub saw for that server.
 - Key -> room: first 16 bytes of SHA-256("MHGURecomp matchmaking key:" + key, spaces around it trimmed), all zero
-  without a key (updater/sha256.c is linked into the game for it). The server lists a hub only for requests with the
+  without a key (updater/sha256.c is linked into the game for it). Android without a key: the room of the key
+  `public-phone`, so phones don't meet PCs in public, and no key reaches the all-zero room; PCs can still enter that
+  key by hand, and the check is only in the client. The server lists a hub only for requests with the
   same room and link PROTO_VERSION; JOIN with another room answers "not found".
 - Host (ldn.c lobby_thread): Create Hub also lists the hub (HOST with its NetworkInfo; UPDATE on every
   push_info_locked change; PING every 15 s; reconnects after 10 / 30 s). For each INCOMING ticket it opens a second
@@ -217,6 +237,37 @@ Plan and security notes: docs/research/internet-hubs.md.
 - UDP through the server: datagrams prefixed "MHGR" + pair id + own secret (Link relay_pair / relay_secret); the
   server passes the rest to the other end. The host sends a bare prefix every second until the station's hellos come
   through, so the server knows where its end is. TCP fallback as before.
+- Direct UDP by hole punching (2026-11-08, research/internet-hubs.md step 4): ini [Multiplayer] Direct (default On,
+  live, settings menu "Direct connections"; MHGU_LDN_DIRECT env). The user decided (2026-11-08) that direct may be
+  the default in public hubs too; Off stays as the relay-only option. Each end of a relayed link sends the server a
+  32-byte "MHGQ" query over its relay socket; the server answers "MHGP" (same size: no amplification) with the other
+  end's public UDP address and the pair's direct key, only once BOTH ends asked (Direct = Off on either end: no
+  address is ever given out) and never relays a query. Direct datagrams start "MHGR" + pair + direct key (like
+  relayed ones with the sender's secret) and must come from the address the server named: anything else reaching
+  the port straight from the internet is dropped. Then the host sends U_PUNCH and the station direct U_HELLOs (200 ms
+  for 15 s, then 2 s); the station's direct path is up when a direct hello is answered, and its hellos then carry
+  UF_DIRECT_OK, which brings the host's up. Game packets go direct while it is up, each packet by one path only (no
+  duplicates); the relay stays up beside it (relay hellos every 2 s, direct hellos every 1 s also keep the routers'
+  mappings open). Liveness counts only two-way proof (station: answers to its own hellos; host: the station's hellos /
+  packets, whose UF_DIRECT_OK says ours arrive): 3.5 s without and that end goes back to the relay, asks the server
+  again at once (an address change after a Wi-Fi / mobile switch) and punches fast again; coming back to direct after
+  a fall takes 3 answers (no flapping). The log says why there is no direct path: the other end never offers one
+  (Direct Off, older game or server) after 30 s, or 15 s of punching got nothing (symmetric / CGNAT, firewall). The
+  station's UDP socket is no longer connected (it hears the server and the host); SIO_UDP_CONNRESET off on Windows.
+  Old servers forward the query as data and the other end ignores it; old peers never ask: both stay on the relay.
+  No on-screen indicator yet (logs only).
+- Debug: MHGU_LDN_RTT=1 (both ends): hellos every 250 ms carry the station's clock and the answer echoes it; every
+  10 s the station logs the round trip per path (relay / direct) and both ends log their game packets sent /
+  received per path (direct, UDP via server or LAN, TCP). MHGU_LDN_BLOCK_DIRECT=<s>[-<t>]: direct datagrams ignored
+  from s s after a link starts (0: always, a symmetric-NAT stand-in), until t s if given (a passing outage).
+- Measured (2026-11-08, two instances on this PC, ~10 game packets/s each way): through a local server, relay round
+  trip 0.22-0.28 ms vs direct 0.13-0.16 ms, and after punching every game packet went direct (0 through the
+  server). Through the public server (Direct Off, test key): relay round trip 10.5-12.8 ms avg, 9.2 ms min, which is
+  what the relay adds over a direct path between two players on this PC's line; across a country / ocean it adds the
+  players' two legs to the server. Fallback tested: punching blocked from the start (stays on the relay), direct
+  broken mid-session either way (both ends back on the relay within ~4 s, packets kept flowing), the player with
+  Direct Off (the host never got its address). Not tested yet: two PCs behind real NATs, a hunt over the direct path.
+  Scripts: session f782a77e scratchpad (start.ps1, route.ps1, scenario.ps1 -hblock / -jblock / -hdirect / -jdirect).
 - Hardening on the way: every NetworkInfo from the network goes through info_sane (counts / sizes in range, strings
   terminated, node ids = index) before the game sees it; a WELCOME's node number is range-checked (was an out-of-
   bounds read); F_REFUSE results other than nn::ldn's become ConnectionRejected.
@@ -227,11 +278,8 @@ Plan and security notes: docs/research/internet-hubs.md.
   versions, splice, UDP relay incl. a forged secret, rate and per-IP limits, a host that never attaches). Not tested
   yet: two PCs / real NAT, a hunt through the relay, more than 2 players. Note the joiner needs the host's hub type
   unlocked (Hunters' Pub = G Rank).
-- Public server (2026-10-29): morerokk-mhgurecomp-ldnserver.duckdns.org (DuckDNS name -> the VM's public IP), an Oracle
-  Cloud Always Free VM (AMD micro, Oracle Linux 9). /usr/local/bin/mhgurecomp-hubserver (GOOS=linux GOARCH=amd64
-  build), systemd unit mhgurecomp-hubserver (-v, DynamicUser, sandboxed), firewalld + VCN security list open 39510
-  TCP / UDP. Log: `sudo journalctl -u mhgurecomp-hubserver`. Update: copy the new binary in, restorecon, restart.
-  Checked from outside: list, join, splice, UDP relay (scratchpad hubcheck.py <host>), ~4 MB RAM.
+- Public server (2026-10-29): (server address was here). If you are making a publicly distributed fork, please ensure that you change the default server address *if* your fork isn't network-compatible. If it is network-compatible, then feel free to use it. If it's not network-compatible, please use a different (or empty) default server.
+    - Additionally, if you are also building for Android or iOS (mobile), please ensure that *if* you use the default `morerokk` server: "no matchmaking key" on mobile always instead passes `public-phone` as a matchmaking key. This is to ensure gameplay remains stable on PC, while still allowing players to opt into crossplay by specifying a matchmaking key themselves.
 - Two-instance test: scratchpad mp_start.ps1 (-port / -server / -key), hub_route.ps1 (loads the save; -mode host
   stops at Create Hub settings: A on "Hunters Hub", LEFT to "Wycademy Hub", A, X; -mode join opens Search Hubs),
   hublist.py <key> (what the server lists). The run\ save starts on the airship: ZL = Multiplayer menu.
@@ -243,7 +291,13 @@ Plan and security notes: docs/research/internet-hubs.md.
   matters: LAN / Join hubs first (ldn_scan), then the server's (server.go list: hubs with a free slot first, then
   the fuller, then the newest). Since then (server.go list) the server's ListMax is 18 and, with more hubs than
   that, each LIST is a random 18 (shuffled, hubs with a free place kept before full ones), then sorted as before: a
-  Retry shows others. Not done: passworded hubs also take places in the list (they could be sorted last).
+  Retry shows others.
+- Passcoded hubs last (2026-11-08): MHGU's advertise data (NetworkInfo +0x26C, 200 bytes) has a u16 passcode at
+  +0xC0: 0xFFFF = none, else the 4-digit code in bits 0-14 (1234 = 0x04D2), bit 15 set for "Everyone", clear for
+  "Exclude Friends" (measured: open 0xFFFF, Everyone 1234 = 0x84D2, Exclude Friends 0000 = 0x0000). server.go list
+  ranks hubs: room and no passcode, room and a passcode, full, full with a passcode; both the random choice and the
+  sort go by rank, so passcoded hubs only show when open hubs with room leave places (user's call: private groups
+  should use a matchmaking key). Hosting asks the code by text entry (control "type 1234" + "textkey enter").
 
 ## Event camera pans skippable with A (2026-10-21)
 
@@ -259,11 +313,15 @@ scenes with dialogue in the middle) not tested.
 ## Small monsters synced in multiplayer (2026-10-21)
 
 The original game syncs small monsters' HP / deaths only; each player's game runs their AI, so players see them in
-different places. runtime/net/emsync.c makes the first player in a zone their master (the game's own large-monster
-mechanism: flag 8 sends netEmAction, the others replay it); ini [Multiplayer] SyncSmallMonsters (default Off since 2026-10-27:
-players report synced small monsters that stop attacking them; not investigated yet).
-Tested with two instances: positions agree within centimetres, hand-over when the master leaves works. Combat,
-3-4 players and two PCs not tested yet. Research, data layout and test details: docs/research/small-monster-sync.md.
+different places. runtime/net/emsync.c makes the first player in a zone their owner (the game's own large-monster
+mechanism: flag 8 sends netEmAction, monster +0x7420 says who runs it, the others replay); ini [Multiplayer] SyncSmallMonsters (default On; Off from 2026-10-27 to 2026-11-03, after
+reports of synced small monsters that stop attacking and of players dropping: see "Monsters' attention scores" and below).
+Tested with two instances: positions agree within centimetres, hand-over when the owner leaves works. 3-4 players and two PCs
+not tested yet. Research, data layout and test details: docs/research/small-monster-sync.md.
+Fixed 2026-11-04: small monsters ignored players with sync on: it forced flag 0x80 (species data, no attention scores) on all of
+them and left followers running their own AI. Jaggi and Rhenoplos now target and attack both hunters, the same on both games.
+Fixed 2026-11-03: players dropping in some zones (Volcanic Hollow zone 7): uEms100 restarts its first action every update,
+and a master's copy would send each restart. Such a monster is now left out of the sync.
 
 ## Text entry (2026-10-21)
 
@@ -344,6 +402,77 @@ HR72 hosting a Wycademy Hub, client a new HR1 save with only Village 1 star): De
 Fungal Hunt (105, a 1-star quest the client hadn't unlocked) refused; Find the Ferns (101) joined. A Forge plugin
 could do the same (same hooks), but the HP part is the port's own.
 
+Maps (2026-11-05): a Village quest's supply box has one Map (0x6b3), a Hub quest's four. Started from the Hub or
+Pub (hpscale's test, `hpscale_village_from_hub`), it gets 3 more in the box's last empty slots. Supply data: the
+quest arc's quest\supp\supp_<n> (rSupplyList, DTI 0x1a8acf0): f32 1.0, u32 count, then entries of 40 slots
+{u16 item, u8 count, u8 group} (in memory 0xa4 B: +4 items, +0x54 counts, +0x7c groups; a nonzero group starts a
+delivery's items, 0 continues the previous). The box is sQuest +0x1a54: +4 cQuestData, +0xc 40 x {u16 item, u16
+count}, +0xac next slot, +0xc0 a bit per slot that is in the box now. 0x5abc00 (quest start) clears it, 0x5accbc
+copies group 0's non-empty items from slot 0 (bits set), and 0x5ace14 the deliveries' after them (bits clear until
+they arrive; delivery kind 4 from slot 32 on: Find the Ferns, 101, fills 32-39 so). Hooked after 0x5ace14: the maps
+go in the last empty slots (101: 29-31), so they never take a delivery's place. Tested with the hub test forced in
+101 (MHGU_VQ_TRACE=1 logs the box): maps in 29-31, bits set; not yet seen in the box's menu, nor in multiplayer.
+
+## Urgent quests count for everyone (2026-11-01)
+
+ini [Multiplayer] ShareUrgentCredit = On (default, applies at Save): an Urgent quest someone else posted counts for you
+when you clear it, if you have unlocked it yourself. runtime/hle/urgentcredit.c has the mechanism. A clear sets the quest's bit in the save's clear flags
+(the object behind the GOT slot 0x1a38d88, +0x42c; 0x723da4 tests, 0x723f30 sets) in 0x588d40, called once at the quest's end.
+If the game isn't the poster's (0x5ae3b4: online, and sQuestSelector +0xd788 != +0xd789), three checks can skip it:
+0x5ae75c Urgent (sQuest +0xb8 bit 12, from cQuestData mFlag +0x10c bit 0), 0x5ae768 Special Permit (group 4, bit 19),
+0x5a3424 a quest of requesters 5-8 and 12 (mRequestVillage +0xd) that the save hasn't unlocked. The hook makes the first
+say no if 0x74af8c(quest, 0xff, 0) says the quest is unlocked, the counters' own check for showing a quest. It runs the
+quest's unlock script (0x5b2174). That script reads no clear flags: for an Urgent one progress flag decides (found by
+zeroing each byte in turn: +0x501 of the object at GOT 0x1a390e0 for 206 and 303, +0x50c 10216, +0x50d 10307, +0x5af
+11204), and clearing every quest's flag on a new hunter unlocks nothing. Which code sets those flags isn't known; 10216's appeared after a new hunter's 1-star key quests were cleared. The
+script module (vm +0x8d0) is not loaded during a hunt, when the script always says no; it is again on the result
+screen, where 0x588d40 runs. 0x74af8c also goes by a table of quest variants (0x182cde4, bits at +0x35d4): Sky Render
+11401 and 1005 read locked after their clear, when their replay versions take their place. In the quest files mFlag is the file's last u16 (the language references before it have variable length): bit 0
+is on 28 quests: 206, 303, 402, 501, 601, 620, 713, 806, 906, 1005, 1017, 1018, 1019, 1026, 1039, 10216, 10307, 10335,
+10531, 10606, 10608, 10710, 10722, 10768, 11204, 11319, 11401, 11432. Special Permit quests stay the poster's. Other
+things only the poster gets, unchanged: the contract fee back (0x5c7274) and the cutscene-seen flags (0x34e4d8,
+0x34fb60). Each game decides for its own save: nothing is sent, and the host's setting doesn't matter.
+
+Tested (2026-11-01) with a temporary harness, not committed: a quest loaded by MHGU_QUICKHUNT on a scratch save, sQuest
++0x50 set to 3 in the hunt (the game's own clear and result flow then runs), the bit forced to 0 at the start of 0x588d40,
+0x5ae3b4 made to answer "not the poster". Quest 206: testsave/save_0 On (key absent from the ini) -> set; the same with
+the progress byte +0x501 zeroed -> not set; a new hunter (testsave/newsave) -> not set; save_0 Off -> not set, as in the
+original; the new hunter as the poster -> set. Quest 101 (not Urgent), the new hunter -> set. 
+Tested in a Local Play hub (2026-11-01, two instances on one PC, the user driving): host John Rise (HR83) posted The New
+Tenant (10216), joined by a new hunter whose 1-star Hub key quests were cleared solo, so that it had appeared at their
+counter. An insta-clear cheat (sQuest +0xec = 0x29) on the host ended the quest for both. The joiner's log: "[urgent]
+quest 0010216 cleared, posted by someone else: it counts here too"; back in the Hub "Hunter Rank 2 unlocked!", the 2-star
+quests unlocked, and new NPC dialogue. Not checked yet: a joiner who hasn't unlocked the Urgent, in a real hub (only
+through the harness above; the board may refuse them first).
+
+## Quest 713 "Research Team's First Rodeo": black screen after the clear (2026-11-07, not a port bug)
+
+A player's log: black screen right after "quest photo requested", seconds into the quest, with an instant-clear cheat on.
+After the clear, 713's script (sQuest spawn manager 0x5a08e8, +0x55 = post-clear step) spawns Valstrax (em086) only once
+no monster is alive (spawn condition type 6 at 0x5a153c: live count 0 and step 4), then plays its demo event082 (event
+table entry 105, 0x34cad8 / 0x5a8c44: step > 4) and ends the quest. An insta-clear (sQuest +0xec = 0x29) leaves the
+Congalala alive, so step 4 waits forever: the same would happen on a Switch with the cheat. Played through at 60 fps with
+MHGU_KILL_AFTER (carcass gone after ~1 min, "???" Valstrax demo, Quest complete, rewards) and with A skipping the demo
+(evskip): no hang. The emulators' "set 30 fps for the Valstrax quest" issue did not show here; 30 and 120+ fps untested.
+
+## Village quest demos in a session (2026-11-07)
+
+Report: "A Forest Fracas" (329) from the Hub in multiplayer: the Mizutsune cutscene is skipped, the Bulldrome (the
+target) never appears. A quest's monster demos are the event table's type 1 entries (0x17a06fc; 329: entry 49 = event049,
+area 5); the area's update looks one up (0x34cad8) when a hunter enters, and the demo's end calls 0x5a3ecc(sQuest, 1),
+which readies the spawn slots waiting for it (condition type 4, parameter 0). In a session the lookup answers "none"
+(sNetwork +0x63e), so those slots wait forever; Hub quests have none. runtime/hle/villagehub.c (spawn_update, on the
+spawn manager 0x5a08e8) makes that call for a Village quest in a session once any hunter is in a demo's area, on every
+game. Tested alone with MHGU_VQ_DEMO_TEST=1 (skips the session check) and the hunter's zone poked to 5: "[vqhub] ...
+releasing", slot 0 spawned, live monster id 1 = em 0x1e. Two games in a Local Play hub (HR72 test saves, 2026-11-07):
+both read sNetwork +0x63e = 1 in the quest and take it as a Village quest from the Hub, but those saves have cleared
+329, so the counter offers its replay 330 (Bulldrome in slot 0 with condition type 0, no Mizutsune: not affected).
+Forcing 329 (selector +0xd68 on both, depart bit +0xd65) crashed the host at the departure (empty vtable slot, main
+0x2125b8, as MHGU_QUICKHUNT across town types). 329 itself still needs a two-player run from a save that hasn't cleared
+it (and has the Hub counter: run3\st hasn't met the Guild Manager). Possibly the same
+kind of problem: 713 / 906 end with a type 1 Valstrax demo after the clear (see the 713 section); in a session it won't
+play, and whether the quest still ends is untested.
+
 ## Save data safety (2026-10-22)
 
 Reported: saves in a folder symlinked to a NAS (Linux, Proton) were lost. The game saves by DeleteFile(system),
@@ -390,6 +519,44 @@ timers run on the step, not per update). Quest 305 (two Great Maccao plus small 
 311 at 30 fps, 270 and 313 at 120 fps (the Maccao 70-87 each in every run): noise, nothing rising with the frame
 rate. Not measured: what happens inside an action (turning toward a target, collision, hit cooldowns per update).
 
+Monsters' attention scores and the frame rate (2026-11-03): fixed. Each monster keeps a score per hunter, Palico and enemy
+(status block +0x254, +0x264, +0x274) and the target pickers (0x2c5b14) take the highest. Every update 0x2bbf98 does
+`score += (int)(rate * step)` with a small rate from the species' table (0x2bb828; monster +0x75ec -> +0x88), tuned for
+the step of 2.0 at 30 fps. Above that the cast loses the rate: at 240 fps (step 0.25) -3..3 add nothing, so closeness
+stops earning attention and raised scores stay. Measured at 240 fps, change per half second (30 x rate at 30 fps): rate 4
+120, rate 5 120 (should be 150). Fix (runtime/hle/hatestep.c): the monster's time is cut into 30 fps updates and 0x2bbf98
+runs once for each with the step 2.0. Checked: rates 3 / 4 / 5 give 90 / 120 / 150 at 60 and at 240 fps; a hunt played by
+the user at 240 fps felt normal. MHGU_NO_HATESTEP=1 turns it off (for comparing). The update ran on one thread in the 600
+calls traced, so hatestep.c's table needs no lock. Not measured: large monsters (same code).
+This is not why Maccao prefer Palicoes: Maccao's table (limits 1000 2000 3000 5000, rates 5 3 1 -2 -2, then -5 for a flag
+that was set in these tests, set by 0x2b73c8) nets at most 0 for a hunter who only stands near, measured at 30 fps too, while the
+default Palico table climbs. Without Palicoes they attack the hunter, score 0. Most likely the original game's behaviour
+(game data, not compared with the original yet).
+
+Monsters' stall timers and the frame rate (2026-11-05): fixed. Reported: above 30 fps large monsters "forget" how to close the gap,
+circle the hunter and run diagonally (Rathian). While a monster hunts a target it can see, 0x2c3d08 counts how long it has gone
+without settling that: monster +0x1414 (past 300: bit 0x10 of +0x1408) and +0x1418 (past 1800: bit 0x20; only while it moves slowly,
++0x140c at most step x 15; 60x as fast in some map cells). They rise by a fixed amount per update (sEnemy +0x2a30 + 1, 2 here), not
+by the step, tuned for 30 updates a second: 8x as fast at 240 fps. Past them the monster repositions: 0x2c46c8 picks a point 60
+degrees off its target (+0xba60). Fix (runtime/hle/emstall.c, tools/gen.py PATCHES 0x2c4058 and 0x2c4150): what they add is scaled by
+step / 2; the same at 30 fps. MHGU_NO_EMSTALL=1 turns it off (for comparing). Measured, +0x1418 per second: 40 at 30 fps, 38 at 240 fps
+with the fix, about 265 at 240 fps without (from one pair of samples).
+Rathian (quest 405), action 2:20, the diagonal run (about 2300 units, 57 degrees off the hunter): 9 in 10 min at 240 fps without the fix.
+With it: 0 in 15 min with the hunter pinned; 8 in 20 min with the hunter free, none while in the hunter's zone (the same action is also how
+a monster moves when apart from the hunter). At 30 fps: 0 in 10 min and 0 in 15 min pinned. Mean distance to the hunter 1002 without, 814 with, 822 at 30 fps. Not explained: with the hunter pinned, 7:0
+(a close bite) 15 at 30 fps and 31 at 240 fps in 15 min. 7:45, likely the reported side bite (not checked by eye): 6 and 3 in 15 min, by the
+same script path; with the hunter free to move, none in 30 min at 240 fps, unexplained. Rajang (quest 405 with em023, 5 min each): no clear
+difference between 30 fps and 240 fps, fixed or not; 2:6 (a long run away from the hunter) 3 times without the fix and never in the two others,
+too few to mean much. The timers are shared monster code (not for two monster numbers, en +0xb5f4 = 3 and 0x53, and stops on some stages by
+0x2c457c), but each species' script decides what repositioning looks like. Not measured: other species, 60 and 144 fps.
+"Monsters change areas too often at high frame rates": not reproduced. In all these runs (standing hunter, about 2 h) a monster
+changed zones only to follow the test's summon. The hunter did no damage, though, and hits may well be what makes monsters leave.
+Tools: MHGU_SUMMON=<cm> (hle/dummy.c: the zone's large monster placed in front of the hunter outside the camp, again after 15 s apart;
+hunter's HP +0x13d6, red part +0x13da held high, position pinned, or a knockback out of the area puts it back in the camp),
+MHGU_EMTRACE_POS=1 (10 times a second: position, yaw, target), MHGU_EMTRACE_CMD=1 (each step of the AI script: interpreter 0x282f80,
+rEnemyCmd, enemy\cmd_tbl\emNNN_00_cmdtbl in the monster's arc). A monster's species is en +0xb5f0. Swapping a quest's monster for a test: byte
++0x7e of questData_0000405 and a b_m01emNNN_00 set file (mtarc, from a quest with it on that map), in a mod.
+
 Monster jumps and the frame rate (2026-10-27): fixed. Reported: Volvidon's body press (it leaps at the hunter and
 lands on its back) far too fast, faster the higher the frame rate. Some actions move the monster with the velocity and
 acceleration in its status block (*(monster + 0x1428) = monster + 0x1440: +0x40 position, +0x10 velocity, +0x20
@@ -424,6 +591,8 @@ Test setup (scratchpad, not in the repo): quest 404 (Hunt a Volvidon) moved to t
 stage from; the Arena's b_m09em062_00 spawn), MHGU_QUICKHUNT=404, then the hunter walks from the waiting room (north
 2 s, east 2.7 s, north through the gate: an area change, so the hunter can't be placed there by poking its position).
 
+Training dummy (2026-11-02, debug, runtime/hle/dummy.c): MHGU_DUMMY=1 holds the zone's first large monster in front of the hunter (240 cm, or MHGU_DUMMY=<cm>), in the hunter's area, its motion stopped, outside the camp: nothing can be hit in the camp. Every hit on it takes 1 HP and logs the damage it would have done, so attacks can be tested without chasing a monster; GU has no training area. Tested hidden on the unmodded game, quest 404 (Volvidon), Charge Blade: walk out of camp, hits logged per part. What it rests on: a player's weapon attack is one object at player+0x3020 (+0xc owner, +0x34 u16 its number, +0x38 s16 its motion value: damage is proportional to it, +0x5c / +0x60 frames until its hitbox opens and how long it stays open). A monster remembers the numbers that hit it (status +0x448, a fixed list; 0x36ba4c checks it in the collision update 0x36b15c): one hit per number, so a new number makes a new hit while the hitbox is open.
+
 Buff icons and the frame rate (2026-10-28): fixed. Reported: with two or more buffs the icon beside a name on the HUD's status plates (yours, the other hunters', the Palicoes') takes turns far too fast at 240 fps. The plates (cUIOStatusPlate / cUIOStatusPlateGuests, update 0x834314) call 0x834d00 once per update for each of their two icon slots ({index, countdown, shown} at plate +0xf0 / +0xfc; tables of 54 and 36 icons at image 0x1839250 / 0x18395b0, tested against the player's buff flags +0x2840..+0x2864, rebuilt from the buff timers each update at 0x49f0xx): the countdown drops by 1 per update and is reloaded with 20, 0.67 s at 30 fps, 0.08 s at 240. Fix (runtime/hle/buffcycle.c, tools/gen.py PATCHES): the decrement (0x834d20) takes step / 2 updates (at most 1) in 1/65536 units and the reload (0x834ef4) is 20 of those. Checked at 240 fps (test save, quest 101, two buffs from their timers: player +0x287c and +0x2880 poked to 3000): the two icons change every 0.667 s, 12 times in 8 s.
 
 KO (stun) and the frame rate (2026-10-29): not found yet. Reported: KO from head hits with blunt weapons much harder at
@@ -442,6 +611,35 @@ at 120 fps; a KO (pending KO poked) lasts 10.0 s at 30 and 60 fps. Next: MHGU_KO
 every hit's KO, the buildup / threshold, KOs held back at the threshold, KO start / end and decay, for a player's
 30 vs 60 fps hammer session. Debug aid added: the control file's "interpread <lo>:<hi> <file of entries>" (interp.c:
 logs the instructions of the listed functions and their callees that read a guest range).
+
+KO in multiplayer (2026-11-07/08): the monster's owner decides, no frame-rate cause found. Theory tested: KOs harder only
+online. How hits work: every game computes hits for every hunter's melee attacks against its own copy of the monster
+(hit dispatch 0x370968 sends a player's hit to 0x376ad0 whether the attacker is local or not; attack types 8 / 9 / 0x45,
+likely shots, only on the owner: 0x36b4e0 / 0x3709a0 test +0x7420). Only the owner applies a KO (0x29a34c -> 0x2a2e18):
+its buildup (+0x5d76, with the other statuses +0x5c94..+0x5daa) goes out in netEmAction (send 0x2cbb74, at each new
+monster action) and overwrites the others' copies (receive 0x2cca0c). So a client's head blow counts only if the
+host's copy of the client (built from its network updates) also lands it on the head. Measured (two instances, two
+copies of a hammer save, Tackling the Tetsucabra, MHGU_DUMMY_SLOT=1 + MHGU_DUMMY_FACE=1 on both, the client pinned):
+the host registered every client head blow at 60/60 (26 of 26), 30/30 (24 of 26) and host 240 / client 60 (27 of 27);
+host 240 / client 30 once 2 of 26, but this PC can't run both games at those rates (median real rate during hits ~10
+fps on the host), so that is overload, not a frame-rate result. Single player at 30 and 240 fps: same KO per blow.
+Network sends are paced by game time, not frames (MHGU_NETRATE, real 30 / 60 / ~130 fps): ~12 UDP datagrams/s,
+~1.2 KB/s per game; netPlPositionQuest (send 0x400438, from 0x49ca48) ~7.5/s, netPlAction (0x3ffbf8) on new actions,
+netEmAction (0x3eb868) on monster actions. The remote hunter: a position update (apply 0x3ffff4: target +0x1480, facing
++0x14a0) starts a 20-frame glide (0x480548: counter +0x147c, velocity +0x1490; each update 0x4806e0 moves it by
+velocity x step and counts down by the step, so it takes the same time at any frame rate; 800+ units off, or every 40th
+update, it snaps); an action (netPlAction apply 0x3ff308) snaps the copy to where and how the attacker started it, then
+plays the move from its first frame. So the host checks a client's swing about one network delay after it was made,
+against a monster the client saw about one delay late: misses grow with the round trip and with how fast the head
+moves (the frozen dummy hides this). Internet hubs added the server's legs to that delay until direct UDP (above).
+Debug aids: MHGU_DUMMY_SLOT=<0..3> (the dummy in front of that player on every game), MHGU_DUMMY_FACE=1 (it faces the
+hunter: heading status +0x54, 65536 = a full turn, rebuilt into the rotation each update), control file "dummy <cm>
+<degrees>" (distance and heading; pins our hunter, held for, in place with its HP topped up) and "fps <n>" (frame rate
+target from now on); KO trace lines say "own 1" on the game that runs the monster; MHGU_NETRATE=1 (runtime/hle/netrate.c:
+real fps, UDP datagrams / bytes and RPC sends per send site every 5 s; RPC send 0xbfc3d8, the return address names the
+message type). Caveat: the dummy (motion speed 0) also stops the KO's countdown, so a KO on it lasts minutes. Two-instance
+route (both from the airship save, Hub Low 1 star quest 7): session da3c4186 scratchpad mp_go.ps1, mp_attack.ps1,
+rate_phase.ps1.
 
 Two-button inputs and the frame rate (2026-10-28): fixed. Reported: the Hunting Horn's X+A (and the Lance's R+X+A)
 need both buttons almost together at high frame rates. The player's input update (0x47ca28, every weapon; called
@@ -899,6 +1097,91 @@ the unwinder's backtrace; umask 007; the startup messages name the Android folde
 VulkanMemoryAllocator 3.4.0's header vendored in third_party/vk_mem_alloc (the Windows build keeps MSYS2's). Windows
 rebuilt and quick-hunted after it: unchanged.
 
+## Vulkan 1.1 path (2026-11-02, branch feat/vulkan-1.1)
+
+The backend now also runs on Vulkan 1.1 devices, which many Android devices are stuck on: `g_vk.api11` (device below
+1.2, or `MHGU_VK11=1`) and `g_vk.fences` (no timeline semaphores). A Vulkan 1.2 device takes neither branch: same features,
+timeline semaphore and SPIR-V as before, and its cache/spirv keys are unchanged. On api11: a fence per submission
+(exec.c), SPIR-V 1.3 in its own cache keys (shaders.c), no 1.2 feature structures (device.c), no FSR 3.1 (fsr.c).
+`MHGU_DATA_DIR=<folder>` puts only the game files elsewhere, e.g. on a USB drive (main.c). Results: R9 270X 53.6 fps
+(1.2) and 53.7 fps (1.1, forced) over 14 minutes of quest 101, same picture; Shield TV Pro 2019 (first real device,
+Vulkan 1.1.178, 3 GB): 41-45 fps at 1080p, 0 of 5518 programs failed. Details: docs/research/android.md "Vulkan 1.1".
+
+## Android TV and game files on a drive (2026-11-02, branch feat/android-tv)
+
+The app is on an Android TV home screen (LEANBACK_LAUNCHER and a banner; phones unaffected), and `[Android] GameFolder` uses
+the game files where they are, for example on a USB drive: Game files folder in the settings' Android tab, or Use where they are
+at the first start. Details and what is untested: docs/research/android.md "Android TV and game files on a drive".
+
+## FSR 4 removed (2026-11-01)
+
+`Upscaler = FSR4` is gone: fsr4.c / fsr4.h, third_party/ffx-api, docs/FSR4-PORT.md, the FSR4_DRIVER_PATCH build option
+and the settings row. A release could only use it with a loader DLL the player supplied, the maintainer's GPU can't test
+it, and bundling AMD's SDK DLLs (PR 168) would add 36 MB (uncompressed) for few players. FSR 3.1 stays. An ini that still
+has `Upscaler = ...` loads as before: the line is logged as an unknown setting, ignored and kept. The instance asks for
+Vulkan 1.2 in every case now.
+
+## Interpreter: pre-decoded blocks (2026-11-06, branch perf/interp-blocks)
+
+Asked for MH4U Port (reports: slow loading screens, frame drops with a bowgun even in the village, a laggy item box;
+slower than on emulators, which JIT the mod's code). The costs are the ones measured above (the "has skill" hook,
+quest_group_rename): the mod's own code, which only the interpreter runs. It took ~25 cycles a guest instruction
+(4.95 ns here), decoding every instruction each time it ran. Now (runtime/interp.c "pre-decoded blocks") a run
+decodes a straight stretch once into ops (up to an instruction that may branch, the end of its interpreted range, or
+32): the class function the decode picks, called without decoding again, and fast handlers for the common forms
+(data processing with an immediate or LSL'd register, CMP / CMN / TST, ADDS / SUBS, LDR / STR / LDRB / STRB / LDRH /
+STRH / LDRSB / LDRSH with an immediate or LSL'd register offset and writeback forms, literal loads, MOVW / MOVT, B /
+BL / BX / BLX). Anything else runs interp_exec as before. Blocks are per thread (no locks), direct-mapped by pc in a
+2 MiB arena (dropped when full) and link to the last two blocks they went on to. Changed code: each op compares the
+word in memory it was decoded from before it runs; fnhook_set / fnhook_keep_entry bump g_code_gen (code_word reads
+the hook bits), which drops a thread's blocks at its next block. interpwatch / interpread step one instruction the
+old way while on.
+- Checked: tools/test_lift.py --interp-ops (new: the ops through interp_exec_op) against Unicorn, 20000 instructions
+  of main and of sdk, and 20000 more of the fast-path forms each: none different from --interp and the lifted C (the
+  one sdk failure, `and r3, r5, r3` at 0x2451bd4, fails the lifted C and --interp too: the test's). The test harness
+  had bit-rotted for --interp (interp.c's newer externs): stubs added.
+- Standalone (a scratch harness running the game's own code interpreted): adler32 over 1 MiB 20.4 -> 5.7 ms,
+  the SDK's qsort of 20000 ints 203 -> 98 ms (2.5 ns an instruction, branchy code: blocks are ~5 instructions).
+- In the game (hidden window, MH4U Port core 1.8.0 + its 4 monster packages from the releases, testsave/save_0,
+  MHGU_QUICKHUNT=101, the master build at 6d81cc3 against this): the town's load with the mod 6.2 -> 3.0 s (from
+  "tigerstripe_zamtrios installed" to the town, two runs each, within 0.2 s); quest_group_rename's stretch 4.95 ->
+  2.3 ns an instruction; in quest 101 the interpreter 160 -> 82 ms a second of play (28 M instructions/s, 99% the
+  "has skill" hook at 34000 calls/s, 240 fps). The mod's log the same (710 lines), no faults. Not tried by hand: a
+  bowgun, the item box, a laptop CPU, Android / Linux builds (plain C, nothing platform-specific added).
+- Still the mod's to fix for most of the rest: gear_has_skill_c rescans every monster's sections per call (~820
+  instructions, almost always "no"); keeping the SKIL pointers once loaded cuts it to a few dozen. Further on our side:
+  tail-call threaded ops (each handler jumping to the next) might give another ~1.5x; matching an emulator would take a
+  JIT (AArch32 -> x86-64 and -> AArch64), a project of its own.
+
+## Even letter spacing in the game's text: [Graphics] FixKerning (2026-11-07)
+
+- The UI text (cGUI, font_festa.gfd) looked unevenly spaced, on the console too. Three causes, all fixed with
+  FixKerning (default On, live; runtime/hle/textlayout.c has the details):
+  - The 2D canvas is 1280x720 and the game snaps each glyph's x to it after aligning a line (0xc45548:
+    floor(x + 0.5) + 0.5). At 1080p a unit is 1.5 px: letters start on whole and half pixels by turns, so the same
+    pair ("he" in "sheathe" / "sheathing") is up to 1.5 px further apart in one word. tools/gen.py PATCHES 0xc45554 /
+    0xc4555c skip the snap of x (y keeps it).
+  - The font's cells hold their letters with uneven blank columns, and its signed x offsets (entry +0x10: -1 on c f m r
+    s t, +1 on i l E H M N ( : ') only move the glyph, not the pen: "r elies", "ent er". The glyph placement
+    (0xc45e64, hooked) places each Latin letter as if its cell held one blank column either side of its ink.
+  - No kerning in the font: pairs whose ink stays 2+ px apart beyond the plain 2 px ("Va", "To", "LT", "r.") get
+    closer, at most 3 px; never with a digit.
+- Measured from the font the game reads (loc/arc/resident.arc through the RomFS, so a font mod's own): the font file and
+  its first glyph page (RGBA8, block linear), at the first text (~15 ms; "[text] ... glyphs measured, N kerning pairs").
+  The runtime links zlib for it (Windows static, Linux / Android the system's libz). MHGU_FIX_KERNING=0|1 overrides the
+  file. How it was found: MHGU_CONTROL "interpwatch" on a glyph node's x showed the layout's write and the snap's.
+- Checked by the user in game (1080p, the style descriptions of the Equipment Box); Linux / Android builds not yet.
+  An aside found on the way: a tab whose longest help runs three lines at 640x480 makes End in the settings menu stop
+  with the last row partly under the pinned help (test_settings_panel.cpp line 653); FixKerning's help is two lines.
+- [Graphics] BoldText (default Off, On on Android for a phone's small screen; live, independent of FixKerning;
+  MHGU_BOLD_TEXT=0|1): the glyph quad writers
+  (0xc3f8c4, 0xc55524, 0xea757c: obj, list, glyph node) draw the whole cell but take the texture from half a texel
+  inside each edge (list +0x38), so every letter is stretched about one font pixel each way: bolder, wider, 4% taller
+  ('l' 25% wider, 'e' 8%; measured in the vertex dump: 'o' texels 926.5-938.5 over a 13-texel quad). Off moves the quad
+  in by the inset for the write (hooks, node put back after): letters at true size, thinner and crisper. The user's
+  side by side (Equipment Box, 1080p): better, but the stretched one reads more easily for some, so it stays an option
+  ("Bold text"; its help names dyslexia).
+
 ## Next steps
 1. Modding tools: decode resident.arc tables (weapon00..14 Base/Level data: record layouts derivable from the game
    code that reads them), monster files per `arc/enemy/emXXX_YY.arc` (`attackdata`, `bodydata`, `dtbase`,
@@ -962,7 +1245,10 @@ rebuilt and quick-hunted after it: unchanged.
    button guides on layer 96 go top, layers below 95 by thirds (the Guild Card name plate), the Meownster Hunters return screen (marked by its map frame, layer 105 at 215, 0) goes top but for
    its prompts, the quest results screen (marked by its Time Left bar, layer 99 at y 643) centres its
    middle: the stamp, reward table, item lists' parchment and rows, the title's PRESS A scales
-   about the centre with its layout (layer 108), and a model preview follows the frame drawn over it, not the last quad
+   about the centre with its layout (layer 108), and a model preview follows the frame drawn over it (also from an earlier pass: the Smithy's model is drawn in a pass of
+   its own), not the last quad; its camera, made for its box stretched to the taller picture, gets the box's 16:9 shape
+   (config.c camera_aspect: only a camera whose aspect is a preview box's the renderer drew), so the model is as big and
+   as wide as at 16:9, and a prompt just under its box (the Palico Scout's "Rotate") goes with its frame
    (the Palico Scout's "Rotate" prompt). MHGU_CONTROL `hudtrace` logs a frame's HUD quads and their anchors. Left: the HUD's layout elsewhere (title, town, quest board, item box) unverified; at Edges
    the Hunter Arts prompt goes right with its layer; whether an off-screen 3D view (equipment box preview, guild
    card) uses one of the three cameras (they are left alone unless 16:9).
@@ -1037,6 +1323,15 @@ frame rate, Connecting-Error-Fix = nifm HLE'd as no internet. A code mod someone
 entry (or a build option that reads .pchtxt at `make gen`). Order: folder names, or mods\load_order.txt; '_' prefix
 skips a folder. Log lines: "[mods] <mod>: romfs <path>", "[romfs] mod <path>: <n> files".
 
+Partial archives (arcmerge.c arc_partial, 2026-11-03): a mod's .arc that lacks some of the game's entries, but has at
+least one of them, is merged over the game's even when it's the first mod to touch that archive; a full one still
+replaces the file, and so does one with none of the game's entries (an unrelated or emptied archive). A mod that left
+out entries on purpose now gets them back. So mods needn't ship the rest of the game's data; the load order doesn't
+matter for this. Checked with quest 101: 85 partial arcs (9 MB, in place of 237 MB) plus a second partial mod over one
+of them reached the hunt, the same 88 arcs read as without mods, a weapon texture changed on screen. Merged arcs are
+full size in cache/arcmerge, and old ones aren't removed. A start with the merges cached reads only the entry tables,
+unless a second mod changes the same arc (then all three files are read again, to report overlaps).
+
 Forge plugins (runtime/forge.c, interp.c; 2026-10-21): Forge (github.com/Fexty12573/forge) is a loader for code mods:
 its own module (exefs subsdk9) loads .nro plugins from the RomFS folder nativeNX/plugins/ and gives them hooks,
 patches, singletons, save data, log and input. The port doesn't use Forge's module (it patches the console's code);
@@ -1078,8 +1373,15 @@ from the first frame (the game's player 1 pad is always there), the sticks are c
 stick-direction bits (16-23) of the game's pad. forge_input_getTouch is the free mouse's left button (not while the
 mouse is captured or Forge's menu is open), as the first touch point in whole 1280x720 screen pixels: the pointer must be
 on the game's picture (fitted in the window by g_render_aspect, centred; outside it: no touch), and the picture's HUD
-canvas (g_ui_anchor_aspect wide at most, centred) spans 0..1279 (beyond it: the edge). Forge's keyboard is 256 HID
-usages.
+canvas (g_ui_anchor_aspect wide at most, centred) spans 0..1279 (beyond it: the edge). The port adds three calls of its
+own for mods (not Forge's), read at the same time: forge_input_getMouse(float *x, float *y, uint32_t *buttons) is the
+free pointer in the same screen pixels with the buttons held or pressed since the last frame (1 left, 2 middle, 4 right,
+8 / 16 the side buttons), false while the mouse is captured, Forge's menu is open or the pointer is off the picture;
+forge_input_getMouseMove(float *dx, float *dy) is the movement since the last frame wherever it went, the hunt camera
+too (counts while captured, window pixels while free, y down; 0 while Forge's menu is open); forge_input_setMouseFree(bool)
+makes the mouse free for a mod's own pointer while true: not captured (let go if it was, captured again after if the
+player had clicked in), shown in full screen, and its clicks only the mod's (not a capture, not the game's buttons).
+Forge's keyboard is 256 HID usages.
 Forge's config.ini ([menu] key, font_size; [log] level) is read as iniparser reads it, from one file: the topmost mod's
 romfs nativeNX/forge/config.ini (files are not merged; a long line, a stray line or an unreadable file means the defaults:
 level info, key Insert, 12 px), key = strtol base 0 (decimal, 0x hex, 0 octal), font_size = atof, a level that is not a
@@ -1234,12 +1536,14 @@ controller, frames = presented frames; e.g. `300:A:10`), `MHGU_NAME` (answers ev
 `fnnew lo hi [learn ms]` = log only the first call of each function in [lo, hi) not seen while learning, to find what an
 event runs; `peek` / `poke` / `memsave` / `find` for guest memory), `MHGU_QUICKHUNT=<quest number>` (from start-up
 straight into that quest: A through the menus to the save's town, then the quest is ordered and departed on;
-runtime/hle/quickhunt.c has how the game departs; `MHGU_QUICKHUNT=town` stops in the town), `vpad` (control file:
+runtime/hle/quickhunt.c has how the game departs; `MHGU_QUICKHUNT=town` stops in the town), `MHGU_KILL_AFTER=<s>`
+(the quest's large monster dies by one real hit that long into the quest), `MHGU_FORCE_EVENT=<n>` (the next quest-demo
+lookup plays event table entry n; both in quickhunt.c), `vpad` (control file:
 attach an SDL virtual controller; `vpad <n> <button> <0|1>` presses its button), `MHGU_LOG_MOVES=1` (the player's actions and command table
 changes, runtime/hle/movelog.c), `MHGU_EMTRACE=1/2/3` (large monster actions with their real-time length, height and
 distance; 2: the position every update; 3: the monster object saved on 4 updates once a forced action is 200 up;
-MHGU_CONTROL's `emact <group> <index>` starts an action, `emsweep <group> <first> <last>` each in turn:
-runtime/hle/emtrace.c), MHGU_CONTROL's `fntrace lo hi n r0lo r0hi` (only calls with r0 in that range: one object's
+MHGU_CONTROL's `emact <group> <index>` starts an action, `emsweep <group> <first> <last>` each in turn;
+`MHGU_EMTRACE_ZAKO=1`: small monsters' actions, targets, attention scores and rates: runtime/hle/emtrace.c), MHGU_CONTROL's `fntrace lo hi n r0lo r0hi` (only calls with r0 in that range: one object's
 methods) and `interpwatch <addr> <file of function entries>` (runs those functions and all game code they call in the
 interpreter, logging every instruction that changes the word at addr),
 `MHGU_SHOT_AT=<frames>`, `MHGU_FPS=1`, `MHGU_VK_STATS=1`, `MHGU_VK_VALIDATION=1`, `MHGU_SYNC_SHADERS=1`, `MHGU_PIPE_WAIT_MS=n`, `MHGU_SKIP_LOG=1`, `MHGU_NO_PREWARM=1`,
@@ -1263,3 +1567,12 @@ warnings ... suppressed" line; 128 sites tracked per plugin. Also WARN, once per
 recompiled code is ignored (`foo.nro: code patch at main+0x... cannot apply to recompiled code: ignored`), and at
 load `[forge] [WARN] foo.nro: import X is not provided (calls return 0)`. Failed hooks stay ERROR lines
 (`Failed to hook ...`), as Forge's own.
+
+Engine modules (runtime/engine_module.c, docs/ENGINE-MODULES.md; 2026-11-04): native libraries in engine_modules/ that extend
+the port itself, loaded only when engine_modules/enabled.txt lists them, with no feature-specific seam in the port. Merged as
+"engine plugins" (PR 242) and renamed before any release, since "plugin" already means a Forge plugin. Things the loader's own
+test can't show: the renderer's atexit handler (nvn/vulkan/device.c exit_handler) is registered later, so it runs first and ends
+the process with _exit: a module's shutdown is called from there, after vkDeviceWaitIdle and the pipeline cache. The API version
+is an export (mhgu_engine_module_api) read before the entry is called: refused after the entry had run, a newer module could
+have written past the host's table and left hooks into a library about to be unloaded. MhguHost.port_version is what a module
+checks against the port's internals, which are not an API. The fault report names the modules that were loaded.
