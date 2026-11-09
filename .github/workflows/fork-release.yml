@@ -1,0 +1,183 @@
+name: ARM release
+
+# When morerokk/MHGURecomp has a release newer than this fork's latest, merge its tag into aarch64-linux-v2, build it on
+# an aarch64 runner, run the lifter test there and publish LinuxArm64-MHGURecomp.<tag>.<revision> as a release.
+# The game's exefs (main, sdk) comes from the private repo cerroverb/mhgu-private-assets (secret ASSETS_DEPLOY_KEY).
+# A merge conflict is resolved by Claude Code when the secret CLAUDE_CODE_OAUTH_TOKEN is set; otherwise the run fails.
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Fork-only update of the same upstream release: 2, 3, ... (1: a new upstream release)"
+        default: "1"
+      publish:
+        description: "Push the merge and publish the release (off: build and test only)"
+        type: boolean
+        default: true
+      draft:
+        description: "Publish as a draft (not seen by the updater)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: morerokk/MHGURecomp
+  BRANCH: aarch64-linux-v2
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      up: ${{ steps.v.outputs.up }}
+      go: ${{ steps.v.outputs.go }}
+    steps:
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ inputs.revision || '1' }}
+          PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish }}
+        run: |
+          up=$(gh api repos/$UPSTREAM/releases/latest --jq .tag_name)
+          ours=$(gh api repos/$GITHUB_REPOSITORY/releases/latest --jq .tag_name 2>/dev/null || echo none)
+          echo "upstream $up, this fork $ours"
+          go=true
+          if [ "${ours%.*}" = "$up" ] && [ "$REVISION" = 1 ] && [ "$PUBLISH" = true ]; then go=false; echo "up to date"; fi
+          echo "up=$up" >> "$GITHUB_OUTPUT"; echo "go=$go" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: check
+    if: needs.check.outputs.go == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    env:
+      UP: ${{ needs.check.outputs.up }}
+      REVISION: ${{ inputs.revision || '1' }}
+      PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish }}
+      DRAFT: ${{ inputs.draft || false }}
+      HAS_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+
+      - name: Merge the upstream release
+        id: merge
+        run: |
+          git config user.name cerroverb
+          git config user.email cerroverb@users.noreply.github.com
+          git fetch -q --tags "https://github.com/$UPSTREAM.git"
+          if git merge-base --is-ancestor "$UP" HEAD; then echo "$UP is already merged"; exit 0; fi
+          if git merge -q --no-edit -m "Merge $UP" "$UP"; then exit 0; fi
+          files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+          echo "conflicts in: $files"
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+          [ "$HAS_CLAUDE" = true ] || { echo "::error::Merge conflict in $files and no CLAUDE_CODE_OAUTH_TOKEN"; exit 1; }
+
+      - name: Resolve the conflicts (Claude Code)
+        if: steps.merge.outputs.files != ''
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          prompt: |
+            This repository is a fork of morerokk/MHGURecomp, stopped in a merge of upstream tag ${{ env.UP }} with conflicts in: ${{ steps.merge.outputs.files }}
+            Resolve only those conflicts with the Edit tool. Keep every platform-specific change of this fork and every upstream change: read both sides with git log and git show to learn why each exists. If upstream restructured the code, carry the fork's change over into the new structure. Add no new behaviour, and change nothing outside the conflicts. Keep each file's line endings exactly (some files use CRLF). Remove all conflict markers. Do not stage or commit. If a conflict cannot be resolved with confidence, leave its markers in place and say why.
+          claude_args: >-
+            --allowedTools "Read,Edit,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(git status:*),Bash(git blame:*)"
+            --disallowedTools "Bash(git push:*),Bash(git commit:*),Bash(git add:*),Bash(curl:*),Bash(gh:*)"
+
+      - name: Check and commit the resolved merge
+        if: steps.merge.outputs.files != ''
+        env:
+          FILES: ${{ steps.merge.outputs.files }}
+        run: |
+          left=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+          [ "$left" = "$FILES" ] || { echo "::error::Unexpected files in conflict: $left"; exit 1; }
+          if grep -nE '^(<<<<<<<|=======$|>>>>>>>)' $FILES; then echo "::error::Conflict markers left"; exit 1; fi
+          git add $FILES && git commit -q --no-edit
+
+      - name: Android-specific changes (for the ARM build to look at)
+        run: |
+          base=$(gh api repos/$GITHUB_REPOSITORY/releases/latest --jq .tag_name 2>/dev/null || true)
+          base=${base%.*}
+          if [ -n "$base" ] && git rev-parse -q --verify "$base" >/dev/null; then
+            files=$(git diff --name-only -G'__ANDROID__' "$base" "$UP" -- runtime Makefile | tr '\n' ' ')
+            [ -n "$files" ] && echo "$UP changes Android-specific code in: $files" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Private build inputs
+        env:
+          KEY: ${{ secrets.ASSETS_DEPLOY_KEY }}
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/assets_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/assets_key"
+          GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/assets_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+            git clone -q --depth 1 git@github.com:cerroverb/mhgu-private-assets.git "$RUNNER_TEMP/assets"
+          rm -f "$RUNNER_TEMP/assets_key"
+
+      - name: Packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q clang lld llvm cmake ninja-build python3-venv nasm pkg-config libvulkan-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev libpipewire-0.3-dev libpulse-dev \
+            libasound2-dev libudev-dev libdbus-1-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxss-dev libxtst-dev libegl-dev libgl-dev libcurl4-openssl-dev
+          python3 -m venv tools/venv
+          tools/venv/bin/pip install -q -r tools/requirements.txt
+
+      - name: Game code
+        run: |
+          A=$RUNNER_TEMP/assets
+          rm -rf generated
+          (cd tools && ../tools/venv/bin/python gen.py sdk "$A/exefs/sdk" 0x02400000 ../generated/sdk --hle ../runtime/hle/hle_symbols.txt &&
+           ../tools/venv/bin/python gen.py main "$A/exefs/main" 0x00200000 ../generated/main)
+          cat tools/gen.py tools/lifter.py tools/neon.py tools/nso.py runtime/hle/hle_symbols.txt | tr -d '\r' | sha256sum | cut -c1-16 > generated/gen.id
+
+      - name: Build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$UP" -R "$UPSTREAM" -p 'Linux-MHGURecomp.*.tar.gz' -O "$RUNNER_TEMP/upstream.tar.gz"
+          mkdir -p "$RUNNER_TEMP/bonus" && tar -xzf "$RUNNER_TEMP/upstream.tar.gz" -C "$RUNNER_TEMP/bonus" --strip-components=2 Linux-MHGURecomp/bonus/system
+          make -j"$(nproc)" B=build-a64 O=obj-a64 GAME="$RUNNER_TEMP/assets" VERSION="$UP.$REVISION" SDL3_NEED= \
+            FFMPEG_CONF="$(cat "$RUNNER_TEMP/assets/arm/ffmpeg-conf.txt")" DIST="$RUNNER_TEMP/dist" \
+            BONUS="$RUNNER_TEMP/bonus/system" dist
+          ls -l "$RUNNER_TEMP/dist"
+
+      - name: Lifter test
+        run: |
+          for m in main:0x00200000 sdk:0x02400000; do
+            (cd tools && MHGU_RECOMP="$GITHUB_WORKSPACE" venv/bin/python "$RUNNER_TEMP/assets/tools/test_lift_arm64.py" \
+              "$RUNNER_TEMP/assets/exefs/${m%%:*}" "${m##*:}" --tests 6000) 2>&1 | tee "$RUNNER_TEMP/tl-${m%%:*}.log" | tail -n 3
+            tail -n 1 "$RUNNER_TEMP/tl-${m%%:*}.log" | grep -q ': 0 failing instructions' || { echo "::error::test_lift ${m%%:*} failed"; exit 1; }
+          done
+
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$UP.$REVISION
+          file="$RUNNER_TEMP/dist/LinuxArm64-MHGURecomp.$tag.tar.gz"
+          [ -f "$file" ] || { echo "::error::no $file"; ls "$RUNNER_TEMP/dist"; exit 1; }
+          git push -q origin "HEAD:$BRANCH"
+          git rev-parse -q --verify "refs/tags/$tag" >/dev/null || git tag -a "$tag" -m "MHGURecomp $UP for 64-bit ARM Linux"
+          git push -q origin "refs/tags/$tag"
+          sed "s/0\.12\.0/$UP/g" "$RUNNER_TEMP/assets/arm/relbody.md" > "$RUNNER_TEMP/notes.md"
+          gh release create "$tag" "$file" --verify-tag --title "MHGU Recomp $tag for 64-bit ARM Linux" \
+            --notes-file "$RUNNER_TEMP/notes.md" $([ "$DRAFT" = true ] && echo --draft)
+          digest=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$tag\") | .assets[0].digest")
+          [ "$digest" = "sha256:$(sha256sum "$file" | cut -d' ' -f1)" ] || { echo "::error::uploaded digest $digest differs"; exit 1; }
+          echo "published $tag" >> "$GITHUB_STEP_SUMMARY"
