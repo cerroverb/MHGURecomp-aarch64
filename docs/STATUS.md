@@ -409,6 +409,30 @@ HR72 hosting a Wycademy Hub, client a new HR1 save with only Village 1 star): De
 Fungal Hunt (105, a 1-star quest the client hadn't unlocked) refused; Find the Ferns (101) joined. A Forge plugin
 could do the same (same hooks), but the HP part is the port's own.
 
+Chinese text (2026-11-09): Village quest names and descriptions came up in English in the Hub and Pub when the save's
+language is Simplified or Traditional Chinese. A quest's rQuestData holds its text in 7 languages (mMessage_eng ...
+_chS); the list job loads it from the loose files, but chS and chT were added by a title update and have no loose
+files. Their text is only in the bundles an area keeps loaded (loc\arc\quest\vq for area types 1-4 and 6, gq and gq2
+for 0 and 7: the picker 0x35339c), and the Hub never loads vq. villagehub.c now holds vq (rArchive DTI 0x2324df0,
+getResource, then wait for bit 0 of +0x50: the call only starts the load) from the list job's start 0x5b7fd8 while a
+Hub / Pub counter is in Village mode, and for an on-demand load of a posted Village quest; released with 0xa87660.
+Only for language 7 (chT) and 8 (chS): for the other five, vq's text and rQuestData are byte-identical to the loose
+files (checked for all of vq, gq, gq2). Not in vq, so still English in Chinese: quests 712, 819, 827, 1008, 1014-1016,
+1043 (their text is only in their own q arc; a village has the same limit). The language is sGameControl +0xa5 (table
+0xd359a8: 1 eng, 7 chT, 8 chS), saved with the game and taken from the system language only when 0; no menu changes it.
+To test: control "poke" the byte to 8 (keep the word's other bytes), Quit Game and save, restart. Tested (HR72 test
+save, Pub): before, English names at the Village list; after, Chinese names, objectives and locale, also after Village
+-> Hub -> Village; departing on a Village quest and abandoning it works with the bundle held; English run unchanged.
+
+Empty Village list after an area load (2026-11-09): coming back from a quest with the Village list still selected, the
+counter's star rows were empty until L / R was pressed twice (in every language). The list job an area load starts
+(0x20fdc4) listed 8 quests instead of 402 (selector +0x28; the job had finished its scan, so the filter refused them;
+the filter's locked-quest test is the likely reason, not proven). Building the categories as a village at the stage's
+start (0x5ba8fc, hooked as a test) changed nothing. villagehub.c now marks a list made by an area load in Village mode
+as stale, and ui_update makes it again, as a switch does, the first time the counter's rank or star menu is up: 69 ms
+once. The reload log prints the number listed. Tested (same save, Pub): Village list, departure on quest 702, abandon,
+back to the counter: 402 listed, star rows there, names in Chinese.
+
 Maps (2026-11-05): a Village quest's supply box has one Map (0x6b3), a Hub quest's four. Started from the Hub or
 Pub (hpscale's test, `hpscale_village_from_hub`), it gets 3 more in the box's last empty slots. Supply data: the
 quest arc's quest\supp\supp_<n> (rSupplyList, DTI 0x1a8acf0): f32 1.0, u32 count, then entries of 40 slots
@@ -648,6 +672,10 @@ message type). Caveat: the dummy (motion speed 0) also stops the KO's countdown,
 route (both from the airship save, Hub Low 1 star quest 7): session da3c4186 scratchpad mp_go.ps1, mp_attack.ps1,
 rate_phase.ps1.
 
+Lag compensation (2026-11-08, branch feat/lag-compensation, prototype, tested with two instances on one PC): a hunter's melee hits count as that hunter saw them. runtime/net/hitsync.c, ini [Multiplayer] LagCompensation (default On), env MHGU_LAGCOMP; the file's header has the design. Only the owner applies a hit, for HP and parts as well as KO: 0x370968 -> 0x376ad0 (every game, one attack against one target) only adds to per-update fields of the status block, and 0x297ddc (consumes them into HP +0x370, parts, KO via 0x29a34c) returns at once when +0x7420 is 0; netEmAction overwrites the others' HP (0x2cc7dc). The fields: +0x484..+0x4ff, +0x3a0, +0x444, monster +0x142c.. (list in hitsync.c). Order: the collision update's start (0x36b15c -> 0x37260c) clears them if bit 30 of monster +0x1408 is set, hits add to them, the monster's update (0x2adb3c -> 0x2a5900 -> 0x2a59d0 -> 0x297ddc) consumes them and sets that bit. So a report added at 0x297ddc's entry is consumed once and cleared, without setting anything else (measured below). The design: the hunter's game snapshots the fields around 0x370968 and sends the change (F_AUX, reliable link, magic 0xE7); the owner restores the fields after its copy of a reporting hunter hits (sparks still show) and adds received reports at 0x297ddc's entry. Aggro doesn't go through the fields: 0x29dd40 is recorded and called on the owner (+0x254 + 4 x slot: 50 + damage x 20 before multipliers, measured 730 for damage 34). The per-swing list (+0x448, one hit per attack number) is left alone. Direct weapon hits on large monsters only (attack +0x6d = 1, +0x10 = 0; bow and bowgun shells were added later, see the next paragraph): kinsects, phials, thrown items and Palicoes (+0x6d = 4) stay as they are. Mixed versions without touching PROTO_VERSION: each game with it on sends a Hello every second, an owner ignores a copy and applies its reports only while it hears that hunter's Hello (3.5 s) and has it on itself; emsync.c's and hpscale.c's handlers check their magic and ignore the rest, and the host relays every F_AUX frame. Off in crossplay. Reports are range-checked (MAX_ADD); a hostile client can still report fake hits within range. Checked: it builds; one game with an earlier build (only the tracer, MHGU_HITSYNC_DIFF=1), quest 404, MHGU_DUMMY=1, Great Sword: 14 hits (7 hunter, 7 Palico), every byte each one changed logged, all in the list above except the aggro score +0x254 / +0x268 and +0x2c9 (a byte the aggro code sets), plus monster +0x1432 on Palico hits only. No status or KO weapon in that run, so those fields come from the code. Two instances (host owns the monster, Hub 3 star Flames of Glavenus Passion, two copies of testsave/save_0, Great Sword, MHGU_DUMMY=1 + MHGU_DUMMY_SLOT=1 + MHGU_DUMMY_FACE=1, 1 damage per hit, the client swinging): on / on, 10 reports sent, 10 applied, 10 of the owner's copy's hits ignored; then a counted stretch: host HP -27 = 16 hits it applied itself (Palicoes) + 11 reports, its 11 copy hits adding nothing, so no double hits and no repeated damage. Owner on / client off: no reports, nothing filtered, HP -12 for 12 hits. Owner off / client on: 10 reports sent, none applied, HP -13 for 13 hits. With the released 0.15.5 (dist zip, no hitsync, MHGU_DATA_DIR at build/data): 0.15.5 owner, this branch's client: 10 reports sent and ignored, HP -19 for 19 hits; this branch's owner, 0.15.5 client: nothing filtered, HP -19 for 20 hits counted a moment apart (a Palico hit between the two readings is the likely reason). Both stayed connected. Free monster (MHGU_SUMMON=300, no dummy, real damage, hunters pinned, 70 scripted swings): 100 ms added each way: the client saw 7 hits (damage 302), the owner's copy of it 9 (422); no added lag: 6 (319) against 8 (402). Too few hits to say how often swings are lost, and these are totals, not matched hit by hit; both runs had the copy landing more than the hunter saw, the case where this feature lowers damage against the original. A real session with MHGU_LOG_HITSYNC=1 ("slot N so far: reports sent ..., its copy hit ...") would give the figure. Who owns a large monster: the quest's poster, not the hub's host. Measured with the second player posting and departing the quest: on the hub host's game +0x7420 was 0 and +0x7424 slot 1, on the poster's 1 and slot 1. The owner is set at start-up (0x2b167c) and claimed once (0x2b16e0, the only sender of an owner change found); nothing moves it by zone. With the hub host then swinging and each game holding the monster in front of its own hunter (MHGU_DUMMY without MHGU_DUMMY_SLOT, so its copy missed every time on the owner): 9 reports sent, 9 applied, 0 copy hits, owner's HP -9, where the original game would have done nothing. Hub host in camp, client alone in zone 1 with the held dummy (host also the owner): 10 reports sent and applied, HP exact. netEmMasterSelect / Inquire have only vtable senders: when they run is not known (a disconnect is a guess). Not tested: a KO or status weapon (those fields are from the code), the aggro replay's effect on targets (the call runs, the scores were not read), 3-4 players, two PCs, an owner handover mid-hit. Open: species overrides of the on-hit vtable slots +0x2f8 / +0x98 run for the copy's hit, not for a report; a hit arriving during an owner handover can be lost. Scripts: testsave/lagcomp_test (outside the repo): full.sh <tag> <host on> <client on> runs the whole route and prints the counts; full_old.sh with OH=1 / OJ=1 runs 0.15.5 as that side; full_free.sh is the free monster run. A save for the joiner must be high enough rank for the hub (testsave/urgent_joiner isn't). MHGU_SUMMON now waits for a quest (it fired in the hub, zone 255).
+
+Lag compensation for bows and bowguns (2026-11-09, two instances on one PC, 30 fps, 640x360): the same design as melee, because shells go through the same 0x370968 on every game. An earlier note here said they are hit-checked on the owner only; the trace shows otherwise: 6 shots, 13 arrow hits on the shooter's game (+0x7420 0) and 13 on the owner's copy (+0x7420 1), each with attack +0x10 = 2, +0x6e = 0, +0x70 = the player, +0xc = the shell, and the same fields changed as a melee hit (status block +0x444, +0x484.., +0x4e4, +0x4f0, the per-swing list; +0x2cc changes too and is not reported, like a melee hit's). Reported per hit, so a Rapid shot's arrows or a Pierce shot's hits are counted one by one. Which shells: by vtable (SHOT_VT in hitsync.c), uShellPlw10_000 / _001 (bow) and uShellPlw04_000 / _100 / _101 (w04 for both bowguns); every other player shell stays as it was. A copy's arrows still fly and spark on the owner, with no damage. Mixed versions: shots are their own message kind (M_SHOT, which a melee-only build drops) and the Hello gets a fifth byte, caps bit 0 = this hunter reports shots (older builds send and read only four bytes); the owner ignores a copy's shots only from a hunter with that flag. Checked (host owns the monster, MHGU_DUMMY=300 + MHGU_DUMMY_SLOT=1 + MHGU_DUMMY_FACE=1, control "dummy 800 180" on both, the client shooting, 1 damage per hit): on / on, 8 shots: 24 reports sent, 24 applied, the owner's copy landed 16 hits, all ignored; owner HP -33 between the first and the last report = 23 reports + 10 Palico hits. Client off: no reports, nothing filtered. Owner off / client on: 19 sent, none applied. Melee-only owner (the build before this change) / this client: 21 sent, none applied, nothing filtered. This owner / melee-only client: no shot reports, nothing filtered. Not tested: a bowgun (the vtables come from the class list and the bow's was confirmed live; the only save had a bow), uShellPlw10_001, Pierce and other shot types, bow / bowgun Hunter Arts, real damage on a free monster or with added lag, 3-4 players, two PCs. Explosions that bowgun ammo may spawn through other shell classes (uShellPlEffect*) stay as they were. The user's bow save (run3/bowsave, Rapid bow) fires with X held about 1 s, then R; X alone only charges.
+
 Two-button inputs and the frame rate (2026-10-28): fixed. Reported: the Hunting Horn's X+A (and the Lance's R+X+A)
 need both buttons almost together at high frame rates. The player's input update (0x47ca28, every weapon; called
 from the player update at 0x4a7dec) holds a new attack-button press (the key config's mask from 0x85f93c, | 0x1b0)
@@ -661,6 +689,28 @@ read logical keys the weapon's key function (0x1360058 and its siblings, one per
 PATCHES): the constant is -step / 2 updates (at most 1). Checked: at 120 fps X+A for d <= 8 and X alone 8 frames
 (67 ms) after the press; 30 fps unchanged. A lone attack button is read 67 ms after the press at any frame rate,
 as on the Switch (it was 17 ms at 120 fps).
+
+Three-button inputs at high frame rates (2026-11-08): fixed in Lenient. Reported: R+X+A (Lance charge, Wyvern's Fire)
+inconsistent, by a player with the Better Inputs plugin; SDL's side was clean. The window in 0x47ca28 ends on the second
+attack-button press and resolves saved | new at once (0x47cb44), so the third button had to come in the same update,
+7 ms wide at 150 fps. Lenient's longer window made R pressed just before X and A resolve as R+X (flags +0x1444: 0x400
+R+X+A, 0x40 X+A, R held at that update is R+X+A too, 0x80 R+X). Better Inputs (no source; hooks the pad update 0x5de064)
+ORs held & mask into the pad's new-press word every update for its hold-to-repeat, so a window closed after one
+update and R held earlier + X was R+X at once. Fix (runtime/hle/combowin.c, tools/gen.py PATCHES at 0x47ca38 and
+0x47cc58, local player, step < 2.0, Lenient only): that code decides on a corrected word: R / ZR new only on a real
+press (word & ~last held), a running window sees real presses only, and a press making two of R, X, A with the third
+not held waits for it up to 2.0 of the step with the countdown stopped; the word is put back for the rest of the
+function. Measured (scripted R/X/A, MHGU_PLSNAP, player flags, not on a physical controller): 8 timings at 150 fps, 5
+failed without mods before, 6 with the plugin, none now in either; 240 fps with the plugin none. Plain R+X, R+A, X+A
+come up to 33 ms later (X+A pressed together 0 -> 33 ms); a lone press is unchanged (53 ms for a tap); Strict and 30 fps
+are as before. The plugin's held X fired ~40 times in 0.6 s at 150 fps, now 7-8 (one per 67 ms window, as at 30 fps).
+Follow-up (2026-11-09), reported with the plugin at 60 fps: R held, X+A pressed together gave a guard poke. Measured on
+a Lance (every weapon of a save copy changed to one; act 0010:010 from the guard is the poke): when A goes up a moment
+before X the plugin goes on repeating X alone, which opens a window, expires as an X tap (flags bit 1) and, R held, is
+the poke (the Lance's key function 0x137731c). With the plugin 6 of 6, without 0 of 6. Now a button left over from an
+input of two or more doesn't repeat until it goes up: 0 of 6. Not fixed, the original game's: with R held, A a whole
+update before X sets X's tap bit with X+A and pokes, with or without the plugin. That save copy's Lance starts no charge
+from R+X+A or guard + X+A even without mods (its style not checked), so the charge itself wasn't seen.
 
 Mashing out of a stun and the frame rate (2026-10-30): fixed. Reported: at high frame rates mashing buttons and
 turning the stick ends a stun far sooner than at 30 fps. The stun (dizzy) is act 0x40:026 (update 0x4bcfd0, motion
@@ -1091,6 +1141,15 @@ default ini text now has `Y = R, Mouse Middle` (the first commit changed only th
 The menu shows the Item bar rows. Not tested: choosing the wheel in the menu (needs a real wheel event), a keyboard
 key on ItemLeft / ItemRight, the wheel on a button keybind.
 
+Prowler (2026-11-10): uOtomo has its own bar handler, 0x1417d68 (vtable +0x5c4, called from the player update right
+after the hunters' 0x4f7f38, which also runs for a Palico and passes its checks: without a test there the notch only moved
+the unused pouch slot +0x3298). Selected slot u16 +0x3336 (0-8, wraps, skips the empty ones: f_1417efc(palico, slot, 0
+right / 1 left)), turn bits +0x3338 (2 right, 4 left), select check vfunc +0x230(palico, 0x10), actions 0x47 / 0x48
+without L. itembar.c hooks it too; a Palico is told apart by that vtable slot. Tested with the user's Prowler save in
+quest 101 (uOtomo found with control `find ec159501`, vtable 0x19515ec; `peek` +0x3334): `wheel` -1 / 1 move the slot one each
+way, HUD name and count following, 0 <-> 7 wraps (slot 8 empty in that save), 9 notches at once = 4 (MAX_WAITING). Hunter save (bow)
+retested the same way: the bar still turns. Not tested: a Prowler in multiplayer.
+
 ## BC textures without GPU support (2026-10-31, branch feat/android-build)
 
 First step of the Android build (docs/research/android.md): Adreno and Mali drivers on Android have no
@@ -1274,7 +1333,11 @@ old way while on.
    about the centre with its layout (layer 108), and a model preview follows the frame drawn over it (also from an earlier pass: the Smithy's model is drawn in a pass of
    its own), not the last quad; its camera, made for its box stretched to the taller picture, gets the box's 16:9 shape
    (config.c camera_aspect: only a camera whose aspect is a preview box's the renderer drew), so the model is as big and
-   as wide as at 16:9, and a prompt just under its box (the Palico Scout's "Rotate") goes with its frame
+   as wide as at 16:9, and a prompt just under its box (the Palico Scout's "Rotate") goes with its frame; a preview window beside the menus (the Smithy's
+   parchment, the Poogie costume's) goes Top with them, whichever is drawn first; layer 110 outside the loading screen
+   (the bowgun's reticle, lock-on markers) is not stretched and scales about the centre; the bowgun's ammo list (layer 103, right side) goes with the item
+   bar; a window's pieces up to 470 apart are one group (the Weapon Controls sheet's back parchment, 436 high), and a window stacked right on another of its layer
+   that went the other way takes the pair's anchor with it (the chat log's "Chat" label over its box)
    (the Palico Scout's "Rotate" prompt). MHGU_CONTROL `hudtrace` logs a frame's HUD quads and their anchors. Left: the HUD's layout elsewhere (title, town, quest board, item box) unverified; at Edges
    the Hunter Arts prompt goes right with its layer; whether an off-screen 3D view (equipment box preview, guild
    card) uses one of the three cameras (they are left alone unless 16:9).
@@ -1407,6 +1470,15 @@ forge_input_getMouseMove(float *dx, float *dy) is the movement since the last fr
 too (counts while captured, window pixels while free, y down; 0 while Forge's menu is open); forge_input_setMouseFree(bool)
 makes the mouse free for a mod's own pointer while true: not captured (let go if it was, captured again after if the
 player had clicked in), shown in full screen, and its clicks only the mod's (not a capture, not the game's buttons).
+Keybinds for mods, the port's calls too: forge_input_setKeybind(const char *row, const char *keys) gives a [Keybinds] row
+other keys for now ("L", "Left Ctrl, Q", "None": spelled as the file has them; NULL: the settings' again; false for an
+unknown row or key, an empty string or the chat key), on top of the settings in config_live_bind, so the game reads them at
+once; mhgurecomp.ini keeps the player's, and the settings menu's Keybinds rows show the mod's beside them, in red (a key
+changed there counts once the mod gives the row back; its "in use" check knows the mod's keys). One mod's keys per row: the
+last call wins. forge_input_getKeybind(row, out, size) is the player's own keys for a row, forge_input_getModKeybind(row, out,
+size) what a mod has set (false: none); forge_input_getKeyPressed(out, size) the first key, mouse button or wheel notch
+pressed since the last frame, by its [Keybinds] name, also one Forge's menu took: never the port's own keys, except Escape
+for a mod's menu to cancel with.
 Forge's keyboard is 256 HID usages.
 Forge's config.ini ([menu] key, font_size; [log] level) is read as iniparser reads it, from one file: the topmost mod's
 romfs nativeNX/forge/config.ini (files are not merged; a long line, a stray line or an unreadable file means the defaults:
