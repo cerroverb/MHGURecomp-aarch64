@@ -110,7 +110,7 @@ std::atomic<bool> request_exit, request_back, is_dirty, is_confirming, is_captur
 struct ActionTab {
     ActProfile draft, saved;
     int tab = 0;  // what the list and the drawing show: an index into tab_defs()
-    int dev = 0, weapon = 0, capture = -1, capture_row = -1, layout = ACT_LAYOUT_SIMPLE;  // layout: the one shown (a profile without a Layout key is Advanced once it has bindings: not while it is edited)
+    int dev = 0, weapon = 0, capture = -1, capture_row = -1, layout = ACT_LAYOUT_ADVANCED;  // layout: the one shown (a profile without a Layout key is Advanced)
      // (capture_row: a merged row of the Simple layout)
     bool capture_add = false;
     Uint64 capture_start = 0;
@@ -381,6 +381,7 @@ bool equal(const Config &a, const Config &b) {
     SAME(ldn_direct);
     SAME(bonus_content);
     SAME(village_in_hub);
+    SAME(quest_hold_send);
     SAME(share_urgent);
     SAME(mouse_sensitivity);
     SAME(mouse_sensitivity_y);
@@ -1276,8 +1277,10 @@ void action_rows(std::vector<Row> &r) {
     action(r, "act.reset", tr("Reset game actions"), []() {
         ActProfile &p = acts().draft;
         memset(p.dev, 0, sizeof p.dev);
+        p.layout = ACT_LAYOUT_AUTO;  // (the default layout too: Advanced)
+        acts().layout = act_layout(&p);
     });
-    r.back().help = tr("Every action of both devices and all weapons back to Default.");
+    r.back().help = tr("Every action of both devices and all weapons back to Default, and the Advanced layout.");
     action(r, "act.back", tr("Back"), []() { pop(); });
 }
 // ---- the drawing of the controller, or of the keyboard and the mouse, beside the list (runtime/binding_view.h)
@@ -1707,6 +1710,7 @@ void reset_section() {
         c.sync_small_monsters = f.sync_small_monsters;
         c.lag_compensation = f.lag_compensation;
         c.village_in_hub = f.village_in_hub;
+        c.quest_hold_send = f.quest_hold_send;
         c.share_urgent = f.share_urgent;
         c.hp = f.hp;
         quest_keys();
@@ -2157,6 +2161,7 @@ std::vector<Row> main_rows() {
         add_bool(r, "lagcomp", "Lag compensation (experimental)", &c.lag_compensation, ini("LagCompensation"));
         add_bool(r, "village", "Village quests in Hub", &c.village_in_hub, ini("VillageQuestsInHub"));
         add_bool(r, "urgent", "Urgent quests count for all", &c.share_urgent, ini("ShareUrgentCredit"));
+        add_bool(r, "rewards.hold", "Hold A to send items to box", &c.quest_hold_send, ini("HoldASend"));
         header(r, "hp.header", tr("Monster HP Scaling"));
         for (int i = 0; i < 4; i++)
             number(r, "hp." + std::to_string(i), std::to_string(i + 1) + " " + tr(i == 0 ? "Hunter" : "Hunters"), &c.hp.scale[i],
