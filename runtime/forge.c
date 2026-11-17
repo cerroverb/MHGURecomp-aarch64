@@ -1464,9 +1464,11 @@ static void trace(const char *msg) { LOG("[forge] [DEBUG] %s\n", msg); }
 // Forge's defaults (info, 12 px; the menu key Insert) and ImGui's font. A level that is not a name is the lowest one
 // (Forge keeps its start-up level, error). MHGU_FORGE_LOG, when it names a level, picks it over the file.
 static void overlay_start(const char **layers, int nl) {
-    char path[1400], font[1400] = "", file[1400] = "";
+    char path[1400], font[1400] = "", file[1400] = "", cjk[1400] = "";
     for (int l = 0; l < nl; l++) {
         if (ci_path(layers[l], "nativeNX/forge/fonts/Roboto-Medium.ttf", path, sizeof path)) snprintf(font, sizeof font, "%s", path);
+        // Chinese glyphs: a mod may bring its own (romfs nativeNX/forge/fonts/); else the release's (runtime/overlay.cpp)
+        if (ci_path(layers[l], "nativeNX/forge/fonts/MHGU-CJK.ttf", path, sizeof path)) snprintf(cjk, sizeof cjk, "%s", path);
         if (ci_path(layers[l], "nativeNX/forge/config.ini", path, sizeof path)) snprintf(file, sizeof file, "%s", path);
     }
     ForgeConfig cfg;
@@ -1474,7 +1476,7 @@ static void overlay_start(const char **layers, int nl) {
     if (!file[0] || !forge_config_load(file, &cfg)) trace("Failed to load config, using defaults");
     int level = log_level_of(cfg.level);
     if (!env_level) log_level = level >= 0 ? level : 3;
-    overlay_init(font[0] ? font : NULL, cfg.font_size, cfg.key);
+    overlay_init(font[0] ? font : NULL, cjk[0] ? cjk : NULL, cfg.font_size, cfg.key);
 }
 
 // The trampoline and stub regions of Forge's hooks (once: the test hooks come before the plugins)
