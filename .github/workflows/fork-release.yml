@@ -146,15 +146,51 @@ jobs:
           cat tools/gen.py tools/lifter.py tools/neon.py tools/nso.py runtime/hle/hle_symbols.txt | tr -d '\r' | sha256sum | cut -c1-16 > generated/gen.id
 
       - name: Build
+        id: build
+        continue-on-error: true
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          cat > "$RUNNER_TEMP/build.sh" <<'EOF'
           gh release download "$UP" -R "$UPSTREAM" -p 'Linux-MHGURecomp.*.tar.gz' -O "$RUNNER_TEMP/upstream.tar.gz"
           mkdir -p "$RUNNER_TEMP/bonus" && tar -xzf "$RUNNER_TEMP/upstream.tar.gz" -C "$RUNNER_TEMP/bonus" --strip-components=2 Linux-MHGURecomp/bonus/system
           make -j"$(nproc)" B=build-a64 O=obj-a64 GAME="$RUNNER_TEMP/assets" VERSION="$UP.$REVISION" SDL3_NEED= \
             FFMPEG_CONF="$(cat "$RUNNER_TEMP/assets/arm/ffmpeg-conf.txt")" DIST="$RUNNER_TEMP/dist" \
             BONUS="$RUNNER_TEMP/bonus/system" dist
           ls -l "$RUNNER_TEMP/dist"
+          EOF
+          set -o pipefail
+          bash -e "$RUNNER_TEMP/build.sh" 2>&1 | tee .build-error.log
+
+      # A failed build (often a function upstream added only for its own platforms) goes to Claude Code once.
+      - name: Repair the build (Claude Code)
+        if: steps.build.outcome == 'failure' && env.HAS_CLAUDE == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          prompt: |
+            This repository is a fork of morerokk/MHGURecomp that builds for 64-bit ARM Linux (aarch64). After the merge of upstream tag ${{ env.UP }} the build failed. The build output is in .build-error.log: read its end first.
+            Find the cause and fix it with the smallest change. Port, do not invent: when upstream added or changed something that this fork's own files lack (for example a new plat_* function declared in runtime/platform.h and defined only in upstream's runtime/platform files), copy upstream's definition from the matching upstream file and name that file in a short comment. Read both sides with git log, git show and git grep to learn why each change exists. Change only source files, never generated/, tools/ or .github/. Add no new behaviour and change nothing unrelated to the error. Do not stage or commit. If the cause is not clear, change nothing and say why.
+          claude_args: >-
+            --allowedTools "Read,Edit,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(git grep:*),Bash(git status:*),Bash(git blame:*)"
+            --disallowedTools "Bash(git push:*),Bash(git commit:*),Bash(git add:*),Bash(curl:*),Bash(gh:*)"
+
+      - name: Check, commit and build the repair
+        if: steps.build.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -f .build-error.log
+          changed=$(git diff --name-only)
+          [ -n "$changed" ] || { echo "::error::The build failed and was not repaired (see the Build step)"; exit 1; }
+          echo "repaired: $changed"
+          if echo "$changed" | grep -qE '^(generated|tools|\.github)/'; then echo "::error::The repair changed protected files"; exit 1; fi
+          git diff
+          git add -u && git commit -q -m "Repair the build for $UP (Claude Code)"
+          bash -e "$RUNNER_TEMP/build.sh"
 
       - name: Lifter test
         run: |
