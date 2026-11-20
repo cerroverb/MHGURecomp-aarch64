@@ -327,7 +327,7 @@ Detalles: [docs/SETTINGS_UI.md](docs/SETTINGS_UI.md).
   también cuenta para ti al completarla, si la tienes desbloqueada)
 - `[Monster HP]`: factores de vida de los monstruos y de sus partes (retrocesos, roturas, cortes) para 1 a 4 cazadores en las misiones de la Sala, y excepciones por misión (por
   defecto: todos 1, como el juego original)
-- `[Village Quests]`: `VillageQuestsInHub` (On por defecto), `HubHP` (1.6 por defecto: las misiones de la Aldea
+- `[Village Quests]`: `VillageQuestsInHub` (On por defecto), `HubHP` (1.5 por defecto: las misiones de la Aldea
   publicadas en la Sala multiplican primero la vida de sus monstruos y de sus partes por este valor y luego por el factor de
   `[Monster HP]`)
 - `[Quest Rewards]`: `HoldASend` (On por defecto: al final de una misión, mantén A en la pantalla Enviar a la caja de objetos
@@ -339,7 +339,9 @@ Detalles: [docs/SETTINGS_UI.md](docs/SETTINGS_UI.md).
 - `[Audio]`: `Volume` (de 0 a 100: todo el juego), `MuteInBackground` (On / Off, Off por defecto: sin sonido mientras
   la ventana del juego está en segundo plano), `Output` (Stereo, el predeterminado / 5.1: el juego mezcla su sonido en
   5.1, como en la salida envolvente de la Switch; 5.1 lo reproduce en un equipo envolvente, Stereo lo reduce a dos
-  canales; se aplica al guardar)
+  canales; se aplica al guardar), `Device` (Default, el predeterminado: el dispositivo predeterminado del sistema,
+  también si cambia con el juego abierto / el nombre de un dispositivo como lo muestra el menú de ajustes: siempre ese
+  dispositivo, sin sonido mientras está desconectado; se aplica al guardar)
 - `[Application]`: `ConfirmExit` (preguntar antes de cerrar la ventana), y para el menú de ajustes `Language`
   (English / Spanish / 中文, chino simplificado / 한국어, coreano; un jugador nuevo recibe el idioma del sistema si es
   uno de estos, si no, inglés, y un Language guardado siempre se mantiene. Los caracteres chinos y coreanos salen de

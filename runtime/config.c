@@ -94,6 +94,7 @@
     .combo_window = COMBO_LENIENT,                                                                  \
     .chat_key = "/",                                                                                \
     .menu_chord = 1,                                                                                \
+    .title_back_exit = 1,                                                                           \
     /* [Mouse] */                                                                                   \
     .mouse_sensitivity = 1.0f,                                                                      \
     .mouse_sensitivity_y = 1.0f,                                                                    \
@@ -115,7 +116,7 @@
     .lag_compensation = 1,                                                                          \
     .share_urgent = 1,                                                                              \
     /* [Monster HP, Village Quests] */                                                              \
-    .hp = {{1, 1, 1, 1}, 1.6f},                                                                     \
+    .hp = {{1, 1, 1, 1}, 1.5f},                                                                     \
     .village_in_hub = 1,                                                                            \
     /* [Quest Rewards] */                                                                           \
     .quest_hold_send = 1,                                                                           \
@@ -380,6 +381,11 @@ static const char DEFAULT_INI[] =
     "; Default: On\n"
     "MenuChord = On\n"
     "\n"
+    "; B (the menus' Back) on the title screen's Main Menu asks to quit the game. Turn it off when a mod swaps the\n"
+    "; menus' Confirm and Back, so that confirming there no longer asks\n"
+    "; Default: On\n"
+    "TitleBackExit = On\n"
+    "\n"
     "; The key that opens a line of chat, anywhere (in a quest too): a key's name as the settings menu shows it, or\n"
     "; nothing for none\n"
     "; Default: /\n"
@@ -544,8 +550,8 @@ static const char DEFAULT_INI[] =
     "\n"
     "; When playing a Village Quest from the Hub, first multiply the monster HP by this amount.\n"
     "; This amount is then scaled again by the [Monster HP] settings.\n"
-    "; Default: 1.6\n"
-    "HubHP = 1.6\n"
+    "; Default: 1.5\n"
+    "HubHP = 1.5\n"
     "\n"
     "[Quest Rewards]\n"
     "; At the end of a quest, press and hold A on the Reward Box (Send to the Item Box option) to rapidly send items one-by-one, similar to World/Rise/Wilds.\n"
@@ -583,6 +589,11 @@ static const char DEFAULT_INI[] =
     "; The game mixes its sound in 5.1 either way; Stereo folds it down to two channels.\n"
     "; Default: Stereo\n"
     "Output = Stereo\n"
+    "\n"
+    "; Playback device, by its name as the settings menu lists it (\"Speakers (Realtek(R) Audio)\"...): always that\n"
+    "; device, no sound while it is unplugged. Empty or Default: the system's default device, followed when it changes.\n"
+    "; Default: empty\n"
+    "Device =\n"
     "\n"
     "[Application]\n"
     "; Ask before the game window closes (closing does not save the game)\n"
@@ -808,6 +819,7 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Controls", "BackgroundInput", background_input, false),
     ON_OFF("Controls", "KeyboardPrompts", kbm_prompts, false),
     ON_OFF("Controls", "MenuChord", menu_chord, false),
+    ON_OFF("Controls", "TitleBackExit", title_back_exit, false),
     {"Controls", "ComboInputWindow", SET_CHOICE, F(combo_window), 0, 0, 0, "Lenient,Strict", NULL, false, ERR_MISC},
     {"Controls", "ChatKey", SET_TEXT, F(chat_key), sizeof g_config.chat_key, 0, 0, NULL, NULL, false, ERR_MISC},
     {"Mouse", "MouseSensitivity", SET_FLOAT, F(mouse_sensitivity), 0, 0.1f, 10.0f, NULL, NULL, false, ERR_VIEW},
@@ -857,6 +869,7 @@ const ConfigSetting g_settings[] = {
     {"Audio", "Volume", SET_INT, F(volume), 0, 0, 100, NULL, NULL, false, ERR_MISC},
     ON_OFF("Audio", "MuteInBackground", mute_in_background, false),
     {"Audio", "Output", SET_CHOICE, F(audio_output), 0, 0, 0, "Stereo|2.0,5.1|surround|5.1surround", NULL, false, ERR_MISC},
+    {"Audio", "Device", SET_TEXT, F(audio_device), sizeof g_config.audio_device, 0, 0, NULL, NULL, false, ERR_MISC},
     ON_OFF("Application", "ConfirmExit", confirm_exit, false),
     {"Application", "Language", SET_CHOICE, F(language), 0, 0, 0, "English|en,Spanish|es,中文|zh|chinese,한국어|ko|korean", NULL, false, ERR_LANGUAGE},
     {"Application", "ButtonIcons", SET_CHOICE, F(button_icons), 0, 0, 0, "Xbox,Switch,PlayStation", NULL, false, ERR_ICONS},
