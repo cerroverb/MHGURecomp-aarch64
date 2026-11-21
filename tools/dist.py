@@ -1,6 +1,6 @@
 """Pack a build folder into its release archive, for GitHub (make dist).
 
-usage: python tools/dist.py <build dir> <out dir> <windows|linux> <version> [--bonus <file>]
+usage: python tools/dist.py <build dir> <out dir> <windows|linux> <version> [--bonus <file>] [--dual-screen]
 
 Windows: <out>/Windows-MHGURecomp.<version>.zip; Linux: <out>/Linux-MHGURecomp.<version>.tar.gz (the programs
 keep their executable permission). Inside, one folder of the same name holds what a player copies: the game, its code
@@ -22,7 +22,7 @@ DATA_NOTE = ('Put your own dump of Monster Hunter Generations Ultimate 1.4.0 her
              '(data/exefs/main, data/romfs/...).\n')
 
 
-def files(build, platform):
+def files(build, platform, dual_screen=False):
     """(path in the archive, file on disk, executable) of everything shipped from the build folder."""
     if platform == 'windows':
         programs = ['mhgurecomp.exe', 'mhgugame.dll', 'mhgurecomp-updater.exe']
@@ -52,6 +52,10 @@ def files(build, platform):
     if not os.path.isfile(font):
         sys.exit(f'dist: {font} is missing (make first)')
     out.append((n, font, False))
+    if dual_screen:  # (the bottom screen's wallpapers: MHXX and MHGU pictures, dual_screen/wallpapers/README.txt)
+        walls = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'dual_screen', 'wallpapers')
+        for n in sorted(os.listdir(walls)):
+            out.append(('wallpapers/' + n, os.path.join(walls, n), False))
     return out
 
 
@@ -72,6 +76,9 @@ def check_version(build, platform, version):
 
 def main():
     args = sys.argv[1:]
+    dual_screen = '--dual-screen' in args  # (a DUAL_SCREEN=1 build: its wallpapers go in the archive too)
+    if dual_screen:
+        args.remove('--dual-screen')
     bonus = None
     if '--bonus' in args:
         i = args.index('--bonus')
@@ -86,7 +93,7 @@ def main():
     if platform == 'linux' and elf_machine(os.path.join(build, 'mhgurecomp')) == 183:
         top = 'LinuxArm64-MHGURecomp'
     name = f'{top}.{version}' + ('.zip' if platform == 'windows' else '.tar.gz')
-    entries = files(build, platform)
+    entries = files(build, platform, dual_screen)
     if bonus:
         if not os.path.isfile(bonus):
             sys.exit(f'dist: {bonus} is missing')

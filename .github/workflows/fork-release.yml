@@ -133,7 +133,7 @@ jobs:
           sudo apt-get install -y -q clang lld llvm cmake ninja-build python3-venv nasm pkg-config libvulkan-dev \
             libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev libpipewire-0.3-dev libpulse-dev \
             libasound2-dev libudev-dev libdbus-1-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
-            libxfixes-dev libxss-dev libxtst-dev libegl-dev libgl-dev libcurl4-openssl-dev
+            libxfixes-dev libxss-dev libxtst-dev libegl-dev libgl-dev libcurl4-openssl-dev libdrm-dev
           python3 -m venv tools/venv
           tools/venv/bin/pip install -q -r tools/requirements.txt
 
@@ -155,7 +155,7 @@ jobs:
           cat > "$RUNNER_TEMP/build.sh" <<'EOF'
           gh release download "$UP" -R "$UPSTREAM" -p 'Linux-MHGURecomp.*.tar.gz' -O "$RUNNER_TEMP/upstream.tar.gz"
           mkdir -p "$RUNNER_TEMP/bonus" && tar -xzf "$RUNNER_TEMP/upstream.tar.gz" -C "$RUNNER_TEMP/bonus" --strip-components=2 Linux-MHGURecomp/bonus/system
-          make -j"$(nproc)" B=build-a64 O=obj-a64 GAME="$RUNNER_TEMP/assets" VERSION="$UP.$REVISION" SDL3_NEED= \
+          make -j"$(nproc)" B=build-a64 O=obj-a64 GAME="$RUNNER_TEMP/assets" VERSION="$UP.$REVISION" SDL3_NEED= DUAL_SCREEN=1 \
             FFMPEG_CONF="$(cat "$RUNNER_TEMP/assets/arm/ffmpeg-conf.txt")" DIST="$RUNNER_TEMP/dist" \
             BONUS="$RUNNER_TEMP/bonus/system" dist
           ls -l "$RUNNER_TEMP/dist"

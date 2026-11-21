@@ -26,6 +26,12 @@
     {SDL_SCANCODE_Q}, {SDL_SCANCODE_E}, {SDL_SCANCODE_TAB}, {SDL_SCANCODE_T}, {SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER}, \
     {SDL_SCANCODE_BACKSPACE}, {SDL_SCANCODE_UP}, {SDL_SCANCODE_DOWN}, {SDL_SCANCODE_LEFT}, {SDL_SCANCODE_RIGHT},          \
     {SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL}, {SDL_SCANCODE_LALT, SDL_SCANCODE_RALT}, {KEY_WHEEL_UP}, {KEY_WHEEL_DOWN}}
+#ifdef MHGU_DUAL_SCREEN
+#define CONFIG_DUAL_SCREEN_DEFAULTS .second_display = 0, .bottom_panels = BOTTOM_PANELS_DEFAULT,  /* (off: turned on in the menu; MHXX's quest layout) */ \
+    .bottom_background = BOTTOM_BG_WALLPAPER, .bottom_wallpaper = BOTTOM_WALLPAPER_DEFAULT,
+#else
+#define CONFIG_DUAL_SCREEN_DEFAULTS
+#endif
 // [Graphics] BoldText: on by default on Android (a phone's small screen reads the bolder letters more easily)
 #ifdef __ANDROID__
 #define BOLD_TEXT_DEFAULT 1
@@ -137,6 +143,7 @@
     .menu_scale = 100,                                                                              \
     .updates = UPDATES_ASK,                                                                         \
     .save_location = "",                                                                            \
+    CONFIG_DUAL_SCREEN_DEFAULTS
 
 Config g_config = {CONFIG_DEFAULT_VALUES};
 Config config_defaults(void) { Config c = {CONFIG_DEFAULT_VALUES}; return c; }
@@ -640,7 +647,34 @@ static const char DEFAULT_INI[] =
     "; Android only. The folder holding the game's exefs and romfs folders, used where it is (for example on a USB drive or SD\n"
     "; card), so they don't have to fit in the app's own folder. Empty: the data folder in the app's own folder. Set it with\n"
     "; Game files folder in the settings menu (Android tab): the app needs Android's \"All files access\". Takes effect at the next start\n"
-    "GameFolder =\n";
+    "GameFolder =\n"
+#ifdef MHGU_DUAL_SCREEN
+    "\n"
+    "[Dual Screen]\n"
+    "; MHXX's bottom screen on the second panel of a dual-screen handheld, through a lease from the compositor: the panels\n"
+    "; below show the game's own HUD parts there (and leave the top screen), and take touch\n"
+    "; Default: Off\n"
+    "SecondDisplay = Off\n"
+    "\n"
+    "; The bottom screen's panels, as MHXX's Panel Customize places them on its 4 x 3 grid: name@column,row, columns 0..3\n"
+    "; from the left, rows 0..2 from the top. A panel covers its size from there; a later panel replaces what it covers.\n"
+    "; arts3v 2x3 (three Hunter Arts, stacked: touch one to use it), arts3h 4x1 (the same in a row), map 2x2 (the game's\n"
+    "; minimap: turn it on with Y in the pause menu), itembar 2x1 (touch the middle to use the item, the sides to change\n"
+    "; it), status 4x1 (clock, health, stamina, sharpness), palico 4x1, target 2x1 (touch to switch the target)\n"
+    "; Default: " BOTTOM_PANELS_DEFAULT "\n"
+    "Panels = " BOTTOM_PANELS_DEFAULT "\n"
+    "\n"
+    "; What the bottom screen shows under its panels, and alone out of a quest: Wallpaper (the picture below; without the\n"
+    "; file: Dark), Dark (MHXX's grey), Black (nothing: an OLED panel's pixels stay off)\n"
+    "; Default: Wallpaper\n"
+    "Background = Wallpaper\n"
+    "\n"
+    "; The wallpaper: a BMP in the wallpapers folder beside the program (add your own there), scaled to cover the panel.\n"
+    "; Empty: each wallpaper of the folder in turn, 30 seconds each\n"
+    "; Default: " BOTTOM_WALLPAPER_DEFAULT "\n"
+    "Wallpaper = " BOTTOM_WALLPAPER_DEFAULT "\n"
+#endif
+    ;
 
 void config_path(char *buf, size_t size) {
     const char *e = getenv("MHGU_CONFIG");
@@ -748,6 +782,8 @@ static bool parse_aspect(const char *v, float *out) {
 #define ERR_SERVER "Invalid hub server or matchmaking key (no newlines, ';' or '#')."
 #define ERR_CROSSPLAY "Invalid emulator crossplay address, name or password (no newlines, ';' or '#')."
 #define ERR_FOLDER "Invalid save folder (one line, no ';' or '#')."
+#define ERR_PANELS "Invalid panel list (one line, no ';' or '#')."
+#define ERR_WALLPAPER "Invalid wallpaper file name (one line, no ';' or '#')."
 #define ERR_GAME_FOLDER "Invalid game files folder (one line, no ';' or '#')."
 #define ERR_HP "HP factors must be 0.05-20."
 #define ERR_VILLAGE "Invalid village HP or quest override count."
@@ -877,6 +913,12 @@ const ConfigSetting g_settings[] = {
     {"Application", "MenuScale", SET_INT, F(menu_scale), 0, 50, 200, NULL, NULL, false, ERR_SCALE},
     {"Application", "Updates", SET_CHOICE, F(updates), 0, 0, 0, "Ask,Auto|automatic,Off|never", NULL, false, ERR_UPDATES},
     {"Application", "SaveLocation", SET_TEXT, F(save_location), sizeof g_config.save_location, 0, 0, NULL, NULL, true, ERR_FOLDER},
+#ifdef MHGU_DUAL_SCREEN
+    ON_OFF("Dual Screen", "SecondDisplay", second_display, true),
+    {"Dual Screen", "Background", SET_CHOICE, F(bottom_background), 0, 0, 0, "Wallpaper,Dark,Black", NULL, false, ERR_MISC},
+    {"Dual Screen", "Panels", SET_TEXT, F(bottom_panels), sizeof g_config.bottom_panels, 0, 0, NULL, NULL, false, ERR_PANELS},
+    {"Dual Screen", "Wallpaper", SET_TEXT, F(bottom_wallpaper), sizeof g_config.bottom_wallpaper, 0, 0, NULL, NULL, false, ERR_WALLPAPER},
+#endif
 };
 #undef ON_OFF
 #undef KEYS
@@ -1360,6 +1402,9 @@ void config_load(void) {
     if ((e = getenv("MHGU_FSR_OBJMOTION"))) g_config.fsr_objmotion = atoi(e) != 0;
     if ((e = getenv("MHGU_FSR_ANIMSURF"))) g_config.fsr_animsurf = atoi(e) != 0;
     if ((e = getenv("MHGU_FSR_SHARPNESS")) && strtof(e, NULL) >= 0.0f && strtof(e, NULL) <= 1.0f) g_config.fsr_sharpness = strtof(e, NULL);
+#ifdef MHGU_DUAL_SCREEN
+    if ((e = getenv("MHGU_SECOND_DISPLAY"))) g_config.second_display = atoi(e) != 0;
+#endif
     if ((e = getenv("MHGU_FSR_REACTIVE")) && strtof(e, NULL) >= 0.0f && strtof(e, NULL) <= 1.0f) g_config.fsr_reactive = strtof(e, NULL);
     if (g_config.hdr && g_config.fsr) {  // (FSR's input stays 8-bit: the picture would be SDR-bright, nvn/vulkan/hdr.c)
         LOG("[config] HDR is on: FSR off\n");

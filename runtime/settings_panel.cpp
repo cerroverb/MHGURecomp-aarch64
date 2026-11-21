@@ -25,6 +25,9 @@
 #include <climits>
 #include <cstring>
 #include <deque>
+#ifdef MHGU_DUAL_SCREEN
+#include <dirent.h>
+#endif
 #include <functional>
 #include <map>
 #include <memory>
@@ -445,6 +448,11 @@ bool equal(const Config &a, const Config &b) {
         strcmp(a.ldn_room_pass, b.ldn_room_pass) || strcmp(a.ldn_room_nick, b.ldn_room_nick) ||
         strcmp(a.audio_device, b.audio_device))
         return false;
+#ifdef MHGU_DUAL_SCREEN
+    if (a.second_display != b.second_display || strcmp(a.bottom_panels, b.bottom_panels) || a.bottom_background != b.bottom_background ||
+        strcmp(a.bottom_wallpaper, b.bottom_wallpaper))
+        return false;
+#endif
     for (int n = 0; n < 4; ++n)
         if (a.hp.scale[n] != b.hp.scale[n])
             return false;
@@ -2121,6 +2129,77 @@ std::vector<std::string> playback_devices() {
     SDL_free(ids);
     return list;
 }
+#ifdef MHGU_DUAL_SCREEN
+// The Dual Screen rows: on / off, and the bottom screen's panels from a list of MHXX-style layouts (bottom_hud.c). A
+// list in the ini that is none of these shows as "Custom" and is kept until another is picked.
+struct BottomLayout {
+    const char *name, *panels;
+};
+const BottomLayout bottom_layouts[] = {
+    {"MHXX: item, map, Hunter Arts right", BOTTOM_PANELS_DEFAULT},
+    {"Map, target camera, Hunter Arts right", "map@0,0 target@0,2 arts3v@2,0"},
+    {"Hunter Arts left, map, target camera", "arts3v@0,0 map@2,0 target@2,2"},
+    {"Hunter Arts in a row, map, item bar, target", "arts3h@0,0 map@0,1 itembar@2,1 target@2,2"},
+    {"Status, item bar, target, map", "status@0,0 itembar@0,1 target@0,2 map@2,1"},
+    {"Status, Hunter Arts in a row, item bar, target", "status@0,0 arts3h@0,1 itembar@0,2 target@2,2"},
+    {"MHXX default: Hunter Arts, D-pad, target", "arts3v@0,0 dpad@2,0 target@2,2"},
+};
+// The BMPs in wallpapers/ beside the program (second_display.c loads the chosen one from there), sorted by name.
+std::vector<std::string> wallpaper_files() {
+    std::vector<std::string> files;
+    if (DIR *d = opendir("wallpapers")) {
+        while (struct dirent *e = readdir(d)) {
+            size_t n = strlen(e->d_name);
+            if (n > 4 && !strcasecmp(e->d_name + n - 4, ".bmp")) files.push_back(e->d_name);
+        }
+        closedir(d);
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+// A wallpaper row: one entry per file (shown without .bmp), first none_name ("" in the ini) when given, and the ini's
+// own name when it is none of them.
+void wallpaper_choice(std::vector<Row> &r, const char *id, const char *title, char *field, size_t size, const char *none_name,
+                      const char *key) {
+    std::vector<std::string> files = wallpaper_files();
+    if (none_name) files.insert(files.begin(), "");
+    auto now = std::find(files.begin(), files.end(), std::string(field));
+    if (now == files.end()) now = files.insert(files.end(), field);
+    std::vector<std::string> names;
+    for (const std::string &f : files)
+        names.push_back(f.empty() ? tr(none_name) : f.size() > 4 ? f.substr(0, f.size() - 4) : f);
+    size_t off = (size_t)(field - (char *)&s.draft);  // (the same field of the draft, when the choice is made)
+    add_choice(
+        r, id, title, (int)(now - files.begin()), names,
+        [files, off, size](int v) { snprintf((char *)&s.draft + off, size, "%s", files[(size_t)v].c_str()); }, key);
+}
+void dual_screen_rows(std::vector<Row> &r) {
+    Config &c = s.draft;
+    header(r, "dual.header", tr("Dual Screen"));
+    add_bool(r, "dual", "Bottom screen (dual-screen handheld)", &c.second_display, ini("SecondDisplay"));
+    if (!c.second_display) return;  // (its options only while it is on, as FSR's)
+    constexpr int n = (int)(sizeof bottom_layouts / sizeof bottom_layouts[0]);
+    std::vector<std::string> names;
+    int now = n;
+    for (int i = 0; i < n; i++) {
+        names.push_back(tr(bottom_layouts[i].name));
+        if (!strcmp(c.bottom_panels, bottom_layouts[i].panels)) now = i;
+    }
+    if (now == n) names.push_back(tr("Custom (from mhgurecomp.ini)"));
+    add_choice(
+        r, "dual.panels", "Bottom screen panels", now, names,
+        [](int v) {
+            constexpr int count = (int)(sizeof bottom_layouts / sizeof bottom_layouts[0]);
+            if (v < count) snprintf(s.draft.bottom_panels, sizeof s.draft.bottom_panels, "%s", bottom_layouts[v].panels);
+        },
+        ini("Panels"));
+    add_choice(
+        r, "dual.background", "Bottom screen background", c.bottom_background, {tr("Wallpaper"), tr("Dark"), tr("Black (OLED: off)")},
+        [](int v) { s.draft.bottom_background = v; }, ini("Background"));
+    wallpaper_choice(r, "dual.wallpaper", "Bottom screen wallpaper", c.bottom_wallpaper, sizeof c.bottom_wallpaper,
+                     "Change every 30 seconds", ini("Wallpaper"));
+}
+#endif
 std::vector<Row> main_rows() {
     std::vector<Row> r;
     Config &c = s.draft;
@@ -2162,6 +2241,9 @@ std::vector<Row> main_rows() {
         add_choice(
             r, "anchor", "HUD anchor", c.ui_anchor - 1, {"16:9", "21:9", "32:9", tr("Edges")},
             [](int v) { c.ui_anchor = v + 1; }, ini("UIAnchor"));
+#ifdef MHGU_DUAL_SCREEN
+        dual_screen_rows(r);
+#endif
         break;
     case 1:
         header(r, "audio.header", tr("Audio"));
@@ -2605,6 +2687,12 @@ bool save() {
         acts().saved = acts().draft;
     }
     s.saved = s.draft;
+#ifdef MHGU_DUAL_SCREEN
+    // (the bottom screen's panels apply at once: bottom_hud.c reads g_config.bottom_panels at its next HUD pass)
+    snprintf(g_config.bottom_panels, sizeof g_config.bottom_panels, "%s", s.draft.bottom_panels);
+    g_config.bottom_background = s.draft.bottom_background;
+    snprintf(g_config.bottom_wallpaper, sizeof g_config.bottom_wallpaper, "%s", s.draft.bottom_wallpaper);
+#endif
     s.saved_notice = true;
     s.error.clear();
     if (acts().layout == ACT_LAYOUT_SIMPLE && acts().draft.enable) {  // (saved all the same: the player may mean it)

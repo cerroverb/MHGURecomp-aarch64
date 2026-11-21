@@ -642,6 +642,15 @@ Tested so far by cross-compiling on x86-64 (clang `--target=aarch64-linux-gnu`) 
 `tools/test_lift.py`, with its harness built for aarch64, passes for `main` and `sdk`, and the game starts and reaches
 a quest with the null renderer. It has also been played on an ARM handheld, an AYN Odin 3 Ultra running Armada Linux.
 
+The 64-bit ARM releases are built with `DUAL_SCREEN=1`: on a dual-screen handheld (tested on an AYN Thor running
+Armada Linux in Game Mode) the game can show MHXX's bottom screen on the second panel, through a lease from the
+compositor. Turn on Bottom screen in the settings menu (Display, Dual Screen; off by default, `[Dual Screen]
+SecondDisplay`) and restart. The panels (Hunter Arts, map, item bar, target camera and more, placed as in MHXX's Panel
+Customize) show the game's own HUD parts there and take touch, and the bottom screen shows a wallpaper from the
+`wallpapers` folder, dark grey or black around them. The code is in `runtime/nvn/vulkan/second_display.c` and
+`bottom_hud.c`, with the lease and touch code from Azahar in `third_party/azahar-drm-lease` (GPLv2 or later, so a
+program built with `DUAL_SCREEN=1` is under the GPL).
+
 From Windows, the Linux build can be made in WSL with Arch Linux (`wsl --install -d archlinux`), straight from the
 Windows checkout, into its own folders so the Windows build is left alone:
 

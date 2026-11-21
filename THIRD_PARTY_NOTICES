@@ -5,6 +5,13 @@ below.
   (runtime/kernel.c, ipc.c, loader.c, dispatch.c, runtime/nvn/objects.c, cmdbuf.c, maxwell/translate.c and others)
   were ported from it and adapted to 32-bit ARM. MIT License.
 - Forge (the MHGU plugin loader): the ImGui overlay's style (runtime/overlay.cpp) follows Forge's own. MIT License.
+- Azahar-Enhanced (third_party/azahar-drm-lease, github.com/virtudude/azahar branch drm-leasing, commit d16299140): the
+  drm-lease-v1 client, touch reader and display surface code of the DUAL_SCREEN=1 build. Copyright 2026 Azahar Emulator Project,
+  GPLv2 or any later version: see third_party/azahar-drm-lease/license.txt, and each file's header. A program built with
+  DUAL_SCREEN=1 contains this code and is distributed under the GPL as a whole. Its drm-lease-v1.xml is the wayland-protocols
+  file, with its own notice (MIT style) kept at its top.
+- SDL (zlib license): the way third_party/azahar-drm-lease/drm_lease_dl.h opens wayland-client at run time follows
+  SDL's src/video/wayland/SDL_waylanddyn.h.
 - cimgui (third_party/cimgui): MIT License.
 - Dear ImGui (third_party/cimgui/imgui): MIT License.
 - AMD FidelityFX SDK 1.1.4 (third_party/fsr-vulkan/upstream/ffx-1.1.4): the FSR 3.1 upscaler's host code, Vulkan

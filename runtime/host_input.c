@@ -37,6 +37,9 @@
 #include "hle/mousecam.h"
 #include "keymap.h"
 #include "mods.h"
+#ifdef MHGU_SECOND_DISPLAY
+#include "nvn/vulkan/bottom_hud.h"
+#endif
 #include "overlay.h"
 #include "settings_panel.h"
 #include "rt.h"
@@ -289,6 +292,7 @@ static void script_parse(void) {
 //   dump [n]               save colour target 0 (or the depth of a depth-only pass) of every render pass of the next
 //                          frame (shots/pass_*.png), or of the next n frames (shots/f<i>_pass_*.png for i >= 1)
 //   hudtrace               log every HUD quad of the next frame: its layer, place, and where 16:10 / ultrawide moved it
+//   bottomtouch <u> <v> | bottomtouch up   (dual-screen build) a finger on the bottom panel at upright pixel u, v, or lifted
 //   frame                  log the current frame number
 //   fps <n>                (debug) the frame rate target from now on, 30..240 (not saved)
 //   dummy <cm> <degrees>   (debug, MHGU_DUMMY) the held monster's distance and its heading from the hunter's
@@ -329,6 +333,13 @@ static void control_poll(void) {
             if (!strcmp(cmd, "gpuprof")) { extern volatile int g_gpuprof_request; g_gpuprof_request = 1; continue; }
             if (!strcmp(cmd, "hudtrace")) { g_hudtrace_request = 1; continue; }
             if (!strcmp(cmd, "pieces")) { void menulearn_request_log(void); menulearn_request_log(); continue; }
+#ifdef MHGU_SECOND_DISPLAY
+            if (!strcmp(cmd, "bottomtouch")) {  // bottomtouch <u> <v> | up: a finger on the bottom panel (test mode)
+                bool down = strcmp(arg, "up") != 0;
+                bottom_hud_touch(down, down ? (uint32_t)atoi(arg) : 0, down ? (uint32_t)atoi(arg2) : 0);
+                continue;
+            }
+#endif
             if (!strcmp(cmd, "dump")) { g_dump_request = atoi(arg) > 0 ? atoi(arg) : 1; continue; }
             if (!strcmp(cmd, "memsave")) {  // memsave <guest hex address> <hex bytes> <file>: raw guest memory to a file
                 char path[200] = "";
@@ -1429,5 +1440,8 @@ void host_input_update(void) {
         b &= ~(B(BTN_PLUS) | B(cancel));
     }
     act_update(b, script_b, menu || (typing && !chat_active()));
+#ifdef MHGU_SECOND_DISPLAY
+    if (g_bottom_hud_on) bottom_hud_touch_input(&b, &rx, &ry);  // (the bottom panel's touch: bottom_hud.c)
+#endif
     input_set(b, clamp_axis(lx), clamp_axis(ly), clamp_axis(rx), clamp_axis(ry));
 }

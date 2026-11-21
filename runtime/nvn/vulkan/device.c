@@ -21,6 +21,7 @@
 #include "../../overlay.h"
 #include "fsr.h"
 #include "hdr.h"
+#include "second_display.h"
 #include "vk.h"
 
 VkG g_vk;
@@ -1126,6 +1127,9 @@ void backend_init(void) {
     vk_shaders_init();
     vk_fsr_init();  // ([Upscaler] FSR: fsr.c)
     create_swapchain();
+#ifdef MHGU_SECOND_DISPLAY
+    second_display_init(g_config.second_display, g_vk.props.vendorID, g_vk.props.deviceID);
+#endif
     atexit(exit_handler);
     pthread_t watch;
     if (pthread_create(&watch, NULL, stall_watch, NULL) == 0) pthread_detach(watch);

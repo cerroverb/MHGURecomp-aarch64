@@ -183,6 +183,12 @@ ifeq ($(ARCH),aarch64)
 OSFLAGS  += -fsigned-char
 GENFLAGS += -fsigned-char
 endif
+# DUAL_SCREEN=1: the bottom screen of a dual-screen handheld as a setting ([Dual Screen] SecondDisplay, off by default):
+# runtime/nvn/vulkan/second_display.c and bottom_hud.c, third_party/azahar-drm-lease (GPLv2 or later: the program built
+# with it is under the GPL). wayland-client and libdrm: headers here, opened at run time.
+ifeq ($(DUAL_SCREEN),1)
+OSFLAGS  += -DMHGU_DUAL_SCREEN
+endif
 
 # GAMELIB_ID: what the game code library is compiled against. A library with another id is refused at startup.
 GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/neon.py tools/nso.py tools/gamelib_entry.c \
@@ -232,7 +238,7 @@ IMGUI_OBJ := $(patsubst $(IMGUI)/%.cpp,$(O)/imgui/%.o,$(IMGUI_SRC))
 # (-fvisibility=hidden: without it the executable exports Dear ImGui's C++ symbols, and an overlay that links the
 # system ImGui (MangoHud -> libimgui.so.1) binds its HUD's calls into ours: its 1.91 ImFontAtlas handed to our 1.92
 # code crashes at swap-chain creation. Our own code and the Forge plugins' ImGui thunks bind inside the executable.)
-IMGUIFLAGS := -O2 -g -fvisibility=hidden -DCIMGUI_NO_EXPORT -I$(IMGUI) -I$(IMGUI)/imgui $(LIB_INC)
+IMGUIFLAGS := -O2 -g -fvisibility=hidden -DCIMGUI_NO_EXPORT -I$(IMGUI) -I$(IMGUI)/imgui $(LIB_INC) $(filter -DMHGU_DUAL_SCREEN,$(OSFLAGS))
 # (vendored VulkanMemoryAllocator fallback: -I on a missing dir is ignored, so MSYS2 builds
 # with the system vulkan-memory-allocator package are unaffected)
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Ithird_party/vk_mem_alloc -I$(IMGUI) -Ithird_party/enet/include $(OSFLAGS) $(LIB_INC)
@@ -264,6 +270,24 @@ RT_SRC   := $(filter-out runtime/nvn/vulkan/%,$(RT_SRC))
 RT_CXX   :=
 else
 RT_CXX   := $(O)/rt/nvn/vulkan/vma.o $(FSR_OBJ)
+ifeq ($(DUAL_SCREEN),1)
+LEASE     := third_party/azahar-drm-lease
+LEASE_GEN := $(O)/lease
+LEASE_OBJ := $(patsubst $(LEASE)/%.cpp,$(LEASE_GEN)/%.o,$(wildcard $(LEASE)/*.cpp)) $(LEASE_GEN)/drm-lease-v1-protocol.o
+LEASE_INC := -I$(LEASE) -I$(LEASE_GEN) -idirafter /usr/include/libdrm
+RT_CXX    += $(LEASE_OBJ)
+RTFLAGS   += -DMHGU_SECOND_DISPLAY -I$(LEASE)
+$(LEASE_GEN)/drm-lease-v1-client-protocol.h: $(LEASE)/drm-lease-v1.xml
+	@mkdir -p $(dir $@)
+	wayland-scanner client-header $< $@
+$(LEASE_GEN)/drm-lease-v1-protocol.c: $(LEASE)/drm-lease-v1.xml
+	@mkdir -p $(dir $@)
+	wayland-scanner private-code $< $@
+$(LEASE_GEN)/drm-lease-v1-protocol.o: $(LEASE_GEN)/drm-lease-v1-protocol.c
+	$(CC) -O2 -g -c $< -o $@
+$(LEASE_GEN)/%.o: $(LEASE)/%.cpp $(wildcard $(LEASE)/*.h) $(LEASE_GEN)/drm-lease-v1-client-protocol.h
+	$(CXX) -std=c++20 -O2 -g -Wall -fno-strict-aliasing $(LEASE_INC) -c $< -o $@
+endif
 endif
 
 all: $(EXE) $(if $(GEN_SRC),$(GAMELIB)) $(UPDATER) $(if $(filter windows,$(PLATFORM)),bundle) \
@@ -526,10 +550,13 @@ $(B)/mhgurecomp-%.otf: extras/mhgurecomp-%.otf
 	cp $< $@
 cjkfont: $(addprefix $(B)/,$(CJK_FONTS))
 
-LICENSE_TXT = $(B)/licenses/LICENSE.txt $(B)/licenses/THIRD_PARTY_NOTICES.txt $(if $(AV_DEPS),$(B)/licenses/FFmpeg.txt) \
+LICENSE_TXT = $(B)/licenses/LICENSE.txt $(B)/licenses/THIRD_PARTY_NOTICES.txt $(if $(LEASE),$(B)/licenses/Azahar-GPLv2.txt) $(if $(AV_DEPS),$(B)/licenses/FFmpeg.txt) \
               $(if $(SDL_DEPS),$(B)/licenses/SDL3.txt) $(if $(SHADERC_DEPS),$(B)/licenses/shaderc.txt) \
               $(if $(ZSTD_DEPS),$(B)/licenses/zstd.txt)
 licenses: $(LICENSE_TXT)
+$(B)/licenses/Azahar-GPLv2.txt: $(LEASE)/license.txt
+	@mkdir -p $(dir $@)
+	cp $< $@
 $(B)/licenses/%.txt: %
 	@mkdir -p $(dir $@)
 	cp $< $@
@@ -622,7 +649,7 @@ CHECK_VERSION = @echo '$(VERSION)' | grep -Eq '^[0-9]+(\.[0-9]+)*$$' || \
 ifndef ANDROID
 dist: all
 	$(CHECK_VERSION)
-	$(PY) tools/dist.py $(B) $(DIST) $(PLATFORM) $(VERSION) $(if $(BONUS),--bonus "$(BONUS)")
+	$(PY) tools/dist.py $(B) $(DIST) $(PLATFORM) $(VERSION) $(if $(BONUS),--bonus "$(BONUS)") $(if $(filter 1,$(DUAL_SCREEN)),--dual-screen)
 	$(if $(ANDROID_DIST),$(MAKE) PLATFORM=android ABI=arm64-v8a dist $(if $(BONUS),BONUS="$(abspath $(BONUS))"),@echo "dist: no Android SDK: no APK")
 endif
 

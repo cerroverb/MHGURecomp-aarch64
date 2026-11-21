@@ -146,6 +146,15 @@ typedef struct {
     int ldn_ryu_serve_port;   // [Multiplayer] RyuServePort: its port; 0 = 30456, the LdnServer default
     int ldn_room_serve;       // [Multiplayer] RoomServe: this game runs a suyu-style room itself (runtime/net/roomsrv.c): the pseudo room for suyu-family players
     int ldn_room_serve_port;  // [Multiplayer] RoomServePort: its port; 0 = 24872, the rooms' default
+#ifdef MHGU_DUAL_SCREEN
+enum { BOTTOM_BG_WALLPAPER, BOTTOM_BG_DARK, BOTTOM_BG_BLACK };
+#define BOTTOM_WALLPAPER_DEFAULT "mhxx_blue.bmp"
+#define BOTTOM_PANELS_DEFAULT "itembar@0,0 map@0,1 arts3v@2,0"  // (the owner's MHXX quest screen: item, map below, Hunter Arts right)
+    int second_display;       // [Dual Screen] SecondDisplay: MHXX's bottom screen on a leased panel (nvn/vulkan/second_display.c)
+    char bottom_panels[256];  // [Dual Screen] Panels: the bottom screen's panels and their cells (nvn/vulkan/bottom_hud.c)
+    int bottom_background;    // [Dual Screen] Background: BOTTOM_BG_*, under the panels (nvn/vulkan/bottom_hud.c)
+    char bottom_wallpaper[64];  // [Dual Screen] Wallpaper: a file in wallpapers/, "" each in turn (nvn/vulkan/second_display.c)
+#endif
 } Config;
 // The hub server used when ini Server is empty (runtime/net/ldn.c, server/): the project's public one (an Oracle
 // Cloud VM; a DuckDNS name, so it can move without a release). "" = no default.
