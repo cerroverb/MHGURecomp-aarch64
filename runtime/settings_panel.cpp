@@ -103,7 +103,7 @@ struct State {
     bool dragged = false;  // (the press moved the menu: the tab under it is not chosen when it lets go)
     float header_bottom = 0;  // (the top part that moves the menu, from the window's top: last frame's)
     bool position_override = false;
-    int capture_bind = -1;     // the keybind (BIND_*) a key is being chosen for; -1: the chat key
+    int capture_bind = -1;     // the keybind (BIND_*) a key is being chosen for; -1: the chat key, -2 the pause key
     bool capture_add = false;  // the key chosen is that keybind's second, else its only one
     bool capture_from_actions = false;  // the keybind or chat key is being chosen from the Game actions screen (Keys)
 } s;
@@ -405,6 +405,8 @@ bool equal(const Config &a, const Config &b) {
     SAME(ldn_room_serve_port);
     SAME(ldn_room_host);
     SAME(bonus_content);
+    SAME(backups_on);
+    SAME(save_backups);
     SAME(village_in_hub);
     SAME(quest_hold_send);
     SAME(share_urgent);
@@ -441,7 +443,7 @@ bool equal(const Config &a, const Config &b) {
     if (memcmp(a.binds, b.binds, sizeof a.binds))
         return false;
     if (strcmp(a.ldn_join, b.ldn_join) || strcmp(a.ldn_server, b.ldn_server) || strcmp(a.ldn_key, b.ldn_key) ||
-        strcmp(a.chat_key, b.chat_key) || strcmp(a.save_dir, b.save_dir) || strcmp(a.save_location, b.save_location) || strcmp(a.game_dir, b.game_dir))
+        strcmp(a.chat_key, b.chat_key) || strcmp(a.pause_key, b.pause_key) || strcmp(a.save_dir, b.save_dir) || strcmp(a.save_location, b.save_location) || strcmp(a.backup_location, b.backup_location) || strcmp(a.game_dir, b.game_dir))
         return false;
     if (strcmp(a.ldn_ryu_servers, b.ldn_ryu_servers) || strcmp(a.ldn_ryu_host, b.ldn_ryu_host) ||
         strcmp(a.ldn_ryu_pass, b.ldn_ryu_pass) || strcmp(a.ldn_room_server, b.ldn_room_server) ||
@@ -846,8 +848,9 @@ const char *const bind_titles[BINDS] = {"Move forward", "Move back", "Move left"
                                         "Y", "L", "R", "ZL", "ZR", "Plus", "Minus", "D-pad up", "D-pad down",
                                         "D-pad left", "D-pad right", "Left stick click", "Right stick click",
                                         "Item left", "Item right"};
+const int CAPTURE_CHAT = -1, CAPTURE_PAUSE = -2;  // (s.capture_bind: the chat key, the pause key)
 // What else a key (or KEY_MOUSE + a mouse button) does: one of the recomp's own keys (keymap.h), a keybind other than
-// skip, or (for a keybind's) the chat key; nullptr: nothing
+// skip, the chat key or the pause key (but skip's own: CAPTURE_*); nullptr: nothing
 const char *key_use(int code, int skip) {
     if (const char *use = code < KEY_MOUSE ? key_reserved(code) : nullptr)
         return tr(use);
@@ -855,11 +858,13 @@ const char *key_use(int code, int skip) {
         for (int k = 0; k < BIND_KEYS; k++)
             if (i != skip && (s.draft.binds[i][k] == code || (config_mod_bound(i) && config_live_bind(i, k) == code)))
                 return tr(bind_titles[i]);
-    if (skip >= 0 && code == (int)SDL_GetScancodeFromName(s.draft.chat_key))
+    if (skip != CAPTURE_CHAT && code == (int)SDL_GetScancodeFromName(s.draft.chat_key))
         return tr("Chat key");
+    if (skip != CAPTURE_PAUSE && code == (int)SDL_GetScancodeFromName(s.draft.pause_key))
+        return tr("Pause/Suspend");
     return nullptr;
 }
-// Choosing a key: for a keybind (BIND_*, add: its second key) or the chat key (-1)
+// Choosing a key: for a keybind (BIND_*, add: its second key), the chat key or the pause key (CAPTURE_*)
 void capture(int bind, bool add) {
     acts().capture = -1;
     s.capture_bind = bind;
@@ -880,7 +885,22 @@ void chat_key_row(std::vector<Row> &rows) {
         r.value += std::string(" (") + tr("in use:") + " " + use + ")";
         r.warn = true;
     }
-    r.activate = []() { capture(-1, false); };
+    r.activate = []() { capture(CAPTURE_CHAT, false); };
+    rows.push_back(std::move(r));
+}
+// Pause/Suspend's key (runtime/pause.h); red when something else already uses it
+void pause_key_row(std::vector<Row> &rows) {
+    Row r;
+    r.id = "pause.key";
+    r.title = tr("Pause/Suspend");
+    keyed(r, ini("PauseKey"));
+    SDL_Scancode key = SDL_GetScancodeFromName(s.draft.pause_key);
+    r.value = key != SDL_SCANCODE_UNKNOWN ? s.draft.pause_key : tr("None");
+    if (const char *use = key != SDL_SCANCODE_UNKNOWN ? key_use((int)key, CAPTURE_PAUSE) : nullptr) {
+        r.value += std::string(" (") + tr("in use:") + " " + use + ")";
+        r.warn = true;
+    }
+    r.activate = []() { capture(CAPTURE_PAUSE, false); };
     rows.push_back(std::move(r));
 }
 // One keybind as a row (the Keybinds submenu's, and the Keys of the Game actions screen)
@@ -939,10 +959,13 @@ void keybind_rows(std::vector<Row> &r) {
     }
     header(r, "bind.other", tr("Chat"));
     chat_key_row(r);
+    header(r, "bind.pause", tr("Pause/Suspend"));
+    pause_key_row(r);
     action(r, "bind.reset", tr("Reset keybinds"), []() {
         Config f = config_defaults();
         memcpy(s.draft.binds, f.binds, sizeof f.binds);
         SDL_strlcpy(s.draft.chat_key, f.chat_key, sizeof s.draft.chat_key);
+        SDL_strlcpy(s.draft.pause_key, f.pause_key, sizeof s.draft.pause_key);
     });
     action(r, "bind.back", tr("Back"), []() { pop(); });
 }
@@ -1185,6 +1208,8 @@ void key_rows(std::vector<Row> &r) {
         r.push_back(bind_row(i, "key." + std::to_string(i)));
     header(r, "key.h.chat", tr("Chat"));
     chat_key_row(r);
+    header(r, "key.h.pause", tr("Pause/Suspend"));
+    pause_key_row(r);
     if (!simple) {
         header(r, "key.h.buttons", tr("Buttons"));
         for (int i = BIND_A; i <= BIND_RSTICK; i++)
@@ -1419,6 +1444,7 @@ void action_rows(std::vector<Row> &r) {
 // What the focused row (or the one being set) reads is lit on it with an arrow to its label; the row under the pointer is
 // ringed; every input down right now glows; an input clicked on it goes to the row being set.
 const int BV_KEY_CHAT = 999;  // (the chat key's id among the keys of the Keys tab)
+const int BV_KEY_PAUSE = 998;  // (the pause key's)
 bool g_bv_pointing;           // the pointer is on the drawing: a click there is the drawing's, not a button chosen
 std::string g_bv_help;        // the help of the row focused or pointed at, under the drawing
 std::string short_label(const std::string &full) {
@@ -1467,7 +1493,7 @@ void default_inputs(int id, int dev, std::vector<int> &out) {
 }
 // What a row of the list is: an action (Advanced), a merged row (Simple), a keybind or the chat key (Keys)
 struct FocusTarget {
-    int kind;  // 0 none, 1 action, 2 merged row, 3 keybind, 4 chat key
+    int kind;  // 0 none, 1 action, 2 merged row, 3 keybind, 4 chat key, 5 pause key
     int key;
 };
 FocusTarget focus_target(const std::string &id) {
@@ -1483,12 +1509,14 @@ FocusTarget focus_target(const std::string &id) {
         return {3, atoi(id.c_str() + 4)};
     else if (id == "chat.key")
         return {4, BV_KEY_CHAT};
+    else if (id == "pause.key")
+        return {5, BV_KEY_PAUSE};
     return {0, -1};
 }
 int key_of(const std::string &id, int kind) {
     FocusTarget t = focus_target(id);
     if (kind == TAB_KEYS)
-        return t.kind == 3 || t.kind == 4 ? t.key : -1;
+        return t.kind == 3 || t.kind == 4 || t.kind == 5 ? t.key : -1;
     if (acts().layout == ACT_LAYOUT_SIMPLE)
         return t.kind == 2 ? t.key : -1;
     return t.kind == 1 ? t.key : -1;
@@ -1498,7 +1526,7 @@ int selected_key(int kind) {
     if (s.view == View::KeyCapture) {
         if (a.capture >= 0)
             return a.capture_row >= 0 ? a.capture_row : a.capture;
-        return s.capture_bind >= 0 ? s.capture_bind : BV_KEY_CHAT;
+        return s.capture_bind >= 0 ? s.capture_bind : s.capture_bind == CAPTURE_PAUSE ? BV_KEY_PAUSE : BV_KEY_CHAT;
     }
     return key_of(s.focus, kind);
 }
@@ -1506,7 +1534,7 @@ std::string key_label(int key, int kind) {
     if (key < 0)
         return "";
     if (kind == TAB_KEYS)
-        return key == BV_KEY_CHAT ? tr("Chat key") : tr(bind_titles[key]);
+        return key == BV_KEY_CHAT ? tr("Chat key") : key == BV_KEY_PAUSE ? tr("Pause/Suspend") : tr(bind_titles[key]);
     if (acts().layout == ACT_LAYOUT_SIMPLE)
         return short_label(tr(act_row(key)->label));
     return short_label(tr(act_label(key)));
@@ -1548,6 +1576,9 @@ void bv_collect(BvStore &st, int kind, int sel_key) {
         SDL_Scancode chat = SDL_GetScancodeFromName(s.draft.chat_key);
         if (chat != SDL_SCANCODE_UNKNOWN)
             add((int)chat, BV_KEY_CHAT, tr("Chat key"), BV_KEY_CHAT);
+        SDL_Scancode pause = SDL_GetScancodeFromName(s.draft.pause_key);
+        if (pause != SDL_SCANCODE_UNKNOWN)
+            add((int)pause, BV_KEY_PAUSE, tr("Pause/Suspend"), BV_KEY_PAUSE);
     } else {
         struct Item {
             int key, from;
@@ -1654,8 +1685,8 @@ void bv_click(int code) {
         action_take(code);
         a.capture = -1;
         a.capture_row = -1;
-    } else if (t.kind == 3 || t.kind == 4) {
-        s.capture_bind = t.kind == 3 ? t.key : -1;
+    } else if (t.kind == 3 || t.kind == 4 || t.kind == 5) {
+        s.capture_bind = t.kind == 3 ? t.key : t.kind == 5 ? CAPTURE_PAUSE : CAPTURE_CHAT;
         s.capture_add = false;
         bind_take(code);
         s.capture_bind = -1;
@@ -1833,6 +1864,7 @@ void reset_section() {
         c.mouse_capture = f.mouse_capture;
         c.menu_mouse = f.menu_mouse;
         SDL_strlcpy(c.chat_key, f.chat_key, sizeof c.chat_key);
+        SDL_strlcpy(c.pause_key, f.pause_key, sizeof c.pause_key);
         memcpy(c.binds, f.binds, sizeof c.binds);
         break;
     case 3:
@@ -1875,6 +1907,8 @@ void reset_section() {
 #ifdef __ANDROID__
     case ANDROID_PAGE:
         SDL_strlcpy(c.save_dir, f.save_dir, sizeof c.save_dir);
+        c.backups_on = f.backups_on;
+        c.save_backups = f.save_backups;
         SDL_strlcpy(c.game_dir, f.game_dir, sizeof c.game_dir);
         break;
 #endif
@@ -1884,6 +1918,11 @@ void reset_section() {
         c.menu_scale = f.menu_scale;
         c.menu_confirm = f.menu_confirm;
         SDL_strlcpy(c.save_location, f.save_location, sizeof c.save_location);
+#ifndef __ANDROID__  // (Android: on its own tab)
+        c.backups_on = f.backups_on;
+        c.save_backups = f.save_backups;
+#endif
+        SDL_strlcpy(c.backup_location, f.backup_location, sizeof c.backup_location);
         c.button_icons = f.button_icons;
         c.confirm_exit = f.confirm_exit;
         c.updates = f.updates;
@@ -2589,6 +2628,18 @@ std::vector<Row> main_rows() {
         action(r, "save.location.reset", tr("Use the default folder"), []() { s.draft.save_location[0] = 0; },
                *c.save_location != 0);
         r.back().help = tr("Keeps the save in the default folder again (%APPDATA%\\MHGURecomp\\save on Windows, ~/.local/share/MHGURecomp/save on Linux) after Save and a restart. The save in the other folder is left where it is.");
+        add_bool(r, "backups", "Save backups", &c.backups_on, ini("Backups"));
+        r.back().help = tr("Each time the game saves, the save's files are copied to a folder named after the date and time. To restore one, close the game and copy its files into save_0. Off: no backups are made; those already made stay where they are.");
+        number(r, "backups.kept", "Backups to keep", &c.save_backups, (int)lo("BackupsKept"), (int)hi("BackupsKept"), 1, ini("BackupsKept"));
+        r.back().help = tr("How many save backups are kept: past this many, the oldest is deleted.");
+        text(r, "backup.location", "Backup folder", c.backup_location, sizeof c.backup_location,
+             *c.backup_location ? c.backup_location : tr("In the save folder"), ini("BackupLocation"));
+        r.back().help = tr("Where the save backups go, for example on another drive or in a folder you sync. Empty: a backups folder in the save folder, beside save_0. Type a path, or use Choose folder. Press Save, then restart the game. Backups already made stay where they are.");
+        action(r, "backup.location.pick", tr("Choose folder"), []() { ui_request_import(11); });
+        r.back().help = tr("Opens your system's folder picker to choose the backup folder.");
+        action(r, "backup.location.reset", tr("Use the save folder"), []() { s.draft.backup_location[0] = 0; },
+               *c.backup_location != 0);
+        r.back().help = tr("Puts the save backups in a backups folder in the save folder again, after Save and a restart. Backups in the other folder are left where they are.");
 #endif
         break;
 #ifdef __ANDROID__
@@ -2608,6 +2659,10 @@ std::vector<Row> main_rows() {
         r.back().help = tr("Where the save is kept, so syncing software can keep it the same on your devices: pick the same folder on each. The folder holds save_0, like the PC version's save folder. Android asks for \"All files access\" so the app can use a folder outside its own. Press Save, then restart the app. Your current save is not moved: use Export save first to put it there.");
         action(r, "save.folder.reset", tr("Use the app's folder"), []() { s.draft.save_dir[0] = 0; }, *c.save_dir != 0);
         r.back().help = tr("Keeps the save in the app's own folder again (after Save and a restart). The save in the other folder is left where it is.");
+        add_bool(r, "backups", "Save backups", &c.backups_on, ini("Backups"));
+        r.back().help = tr("Each time the game saves, the save's files are copied to a folder named after the date and time. To restore one, close the game and copy its files into save_0. Off: no backups are made; those already made stay where they are.");
+        number(r, "backups.kept", "Backups to keep", &c.save_backups, (int)lo("BackupsKept"), (int)hi("BackupsKept"), 1, ini("BackupsKept"));
+        r.back().help = tr("How many save backups are kept: past this many, the oldest is deleted.");
         action(r, "import.save", tr("Import save"), []() { ui_request_import(2); });
         r.back().help = tr("Copies a save's system and system_backup files into the app from any folder on this device. Your current save is kept. The app closes afterwards.");
         action(r, "export.save", tr("Export save"), []() { ui_request_import(3); });
@@ -2709,7 +2764,8 @@ bool save() {
     }
     return true;
 }
-// Takes a key (or a mouse button) for the keybind (s.capture_bind) or the chat key (-1) being chosen. false: refused
+// Takes a key (or a mouse button) for the keybind (s.capture_bind), the chat key or the pause key (CAPTURE_*) being
+// chosen. false: refused
 bool bind_take(int key) {
     const char *name = key > 0 && key < KEY_MOUSE ? SDL_GetScancodeName((SDL_Scancode)key) : "";
     const char *reserved = key > 0 && key < KEY_MOUSE ? key_reserved(key) : nullptr;
@@ -2728,6 +2784,22 @@ bool bind_take(int key) {
         else if (keys[0] != key)
             keys[1] = key;
         return true;
+    }
+    if (s.capture_bind == CAPTURE_PAUSE && key > 0) {
+        if (reserved) {
+            s.error = fmt("That key is the recomp's own (%s).", tr(reserved));
+            return false;
+        }
+        if (key == SDL_SCANCODE_RETURN || key == SDL_SCANCODE_KP_ENTER) {  // (Enter resumes, as Esc does)
+            s.error = tr("That key can't be used.");
+            return false;
+        }
+        if (*name && strlen(name) < sizeof s.draft.pause_key && !strpbrk(name, ";#")) {
+            SDL_strlcpy(s.draft.pause_key, name, sizeof s.draft.pause_key);
+            return true;
+        }
+        s.error = tr("That key can't be used.");
+        return false;
     }
     if (key > 0 && *name && strlen(name) < sizeof s.draft.chat_key && !strpbrk(name, ";#")) {
         SDL_strlcpy(s.draft.chat_key, name, sizeof s.draft.chat_key);
@@ -2788,6 +2860,8 @@ std::vector<Row> rows_for_view(bool *open) {
             action(r, "capture.none", tr("None"), []() {
                 if (s.capture_bind >= 0)
                     s.draft.binds[s.capture_bind][0] = s.draft.binds[s.capture_bind][1] = 0;
+                else if (s.capture_bind == CAPTURE_PAUSE)
+                    s.draft.pause_key[0] = 0;
                 else
                     s.draft.chat_key[0] = 0;
                 pop();
@@ -3535,6 +3609,8 @@ void settings_panel(bool *open) {
                                      : s.view == View::Move       ? "Move menu"
                                      : s.view == View::Conflicts  ? "Mod conflicts"
                                      : s.view == View::Keybinds   ? "Keybinds"
+                                     : s.view == View::KeyCapture && s.capture_bind == CAPTURE_PAUSE
+                                         ? "Press the key for Pause/Suspend (Esc: cancel)"
                                      : s.view == View::KeyCapture ? "Press the key for chat (Esc: cancel)"
                                                                   : "Unsaved changes");
         ImGui::TextWrapped("%s", title.c_str());
@@ -3644,6 +3720,9 @@ void settings_panel(bool *open) {
 #else
         Config temp = s.draft;  // (a folder whose path the settings file can't hold, with ';' or '#', is not taken)
         if (which == 4 && SDL_strlcpy(temp.save_location, folder, sizeof temp.save_location) < sizeof temp.save_location &&
+            config_validate(&temp, nullptr, 0))
+            s.draft = temp;
+        if (which == 11 && SDL_strlcpy(temp.backup_location, folder, sizeof temp.backup_location) < sizeof temp.backup_location &&
             config_validate(&temp, nullptr, 0))
             s.draft = temp;
 #endif

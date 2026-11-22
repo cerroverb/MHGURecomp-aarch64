@@ -53,6 +53,7 @@ static SDL_AtomicInt live_menu_confirm;
 static SDL_AtomicInt live_background = {1};
 static SDL_AtomicInt live_combo;
 static SDL_AtomicInt live_chat_key;
+static SDL_AtomicInt live_pause_key = {SDL_SCANCODE_PAUSE};
 static SDL_AtomicInt menu_chord = {1};
 static SDL_AtomicInt title_back_exit = {1};
 // [Mouse]
@@ -75,6 +76,8 @@ static SDL_AtomicInt live_discord;
 static SDL_AtomicInt live_discord_hunter;
 // [Bonus Content]
 static SDL_AtomicInt live_bonus;
+// [Save Backups]
+static SDL_AtomicInt live_backups;
 // [Audio]
 static SDL_AtomicInt volume = {100};
 static SDL_AtomicInt mute_in_background;
@@ -117,6 +120,8 @@ static void publish_live(const Config *c, bool all) {
     if (all || c->combo_window != saved.combo_window) SDL_SetAtomicInt(&live_combo, c->combo_window);
     if (all || strcmp(c->chat_key, saved.chat_key))
         SDL_SetAtomicInt(&live_chat_key, *c->chat_key ? (int)SDL_GetScancodeFromName(c->chat_key) : 0);
+    if (all || strcmp(c->pause_key, saved.pause_key))
+        SDL_SetAtomicInt(&live_pause_key, *c->pause_key ? (int)SDL_GetScancodeFromName(c->pause_key) : 0);
     if (all || c->fxaa_mode != saved.fxaa_mode) SDL_SetAtomicInt(&live_fxaa_mode, c->fxaa_mode);
     if (all || c->smooth_gradients != saved.smooth_gradients) SDL_SetAtomicInt(&live_smooth, c->smooth_gradients);
     if (all || c->aniso != saved.aniso) SDL_SetAtomicInt(&live_aniso, c->aniso);
@@ -167,6 +172,8 @@ static void publish_live(const Config *c, bool all) {
     if (all || c->lag_compensation != saved.lag_compensation) SDL_SetAtomicInt(&live_lagcomp, c->lag_compensation);
     if (all || c->ldn_direct != saved.ldn_direct) SDL_SetAtomicInt(&live_ldn_direct, c->ldn_direct);
     if (all || c->bonus_content != saved.bonus_content) SDL_SetAtomicInt(&live_bonus, c->bonus_content);
+    if (all || c->save_backups != saved.save_backups || c->backups_on != saved.backups_on)
+        SDL_SetAtomicInt(&live_backups, c->backups_on ? c->save_backups : 0);
 }
 void config_store_loaded(const Config *c) {
     publish_live(c, !have_saved);
@@ -214,6 +221,7 @@ int config_live_kbm_prompts(void) { return SDL_GetAtomicInt(&live_kbm_prompts); 
 int config_live_background_input(void) { return SDL_GetAtomicInt(&live_background); }
 int config_live_combo_window(void) { return SDL_GetAtomicInt(&live_combo); }
 int config_live_chat_key(void) { return SDL_GetAtomicInt(&live_chat_key); }
+int config_live_pause_key(void) { return SDL_GetAtomicInt(&live_pause_key); }
 int config_live_fxaa_mode(void) { return SDL_GetAtomicInt(&live_fxaa_mode); }
 int config_live_smooth_gradients(void) { return SDL_GetAtomicInt(&live_smooth); }
 int config_live_aniso(void) { return SDL_GetAtomicInt(&live_aniso); }
@@ -248,6 +256,7 @@ int config_live_sync_small_monsters(void) { return SDL_GetAtomicInt(&live_sync_z
 int config_live_lag_compensation(void) { return SDL_GetAtomicInt(&live_lagcomp); }
 int config_live_ldn_direct(void) { return SDL_GetAtomicInt(&live_ldn_direct); }
 int config_live_bonus_content(void) { return SDL_GetAtomicInt(&live_bonus); }
+int config_live_save_backups(void) { return SDL_GetAtomicInt(&live_backups); }
 void config_live_ldn_join(char *join, size_t size) {
     SDL_LockSpinlock(&live_ldn_lock);
     SDL_strlcpy(join, live_ldn_join, size);

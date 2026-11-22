@@ -110,6 +110,8 @@ Releases may come out pretty often. To update automatically, start `mhgurecomp-u
 
 - The updater always checks against the latest release on GitHub. Sometimes pre-releases might be available, these won't be offered by the auto-updater since they might be broken.
 - Only the recomp files are replaced on update, all other folders (including `data` and `mods` and such) are kept.
+- When an update is found (with `Updates = Ask`, the default), choose **Update & launch** to start the game right after, or **Update only** to just install it: the updater then shows "Updated to …" with a **Close** button instead of starting the game. **Not now** starts the game without updating.
+- To never start the game from the updater, add `--update-no-launch` to its shortcut. It then closes by itself once the update is installed.
 - You can change the auto-updater behavior in the settings.
 - If you run into any issues, `updater.log` has more information.
 
@@ -251,7 +253,7 @@ You can change them in the Settings menu (F1), Controls, Keybinds. You can bind 
 
 Escape, Insert, F1 and F7 to F12 cannot be bound, as they are reserved by the recomp.
 
-Sometimes the game might ask for keyboard input, such as naming your hunter or renaming item sets. Use the keyboard to enter text, `ENTER` to confirm, or `ESC` to cancel. You can use the `/` key to free-chat in multiplayer lobbies.
+Sometimes the game might ask for keyboard input, such as naming your hunter or renaming item sets. Use the keyboard to enter text, `ENTER` to confirm, or `ESC` to cancel. You can use the `/` key to free-chat in multiplayer lobbies. In an online Hub or Hunters' Pub, the button prompts at the bottom right show that key as **Chat** (a keyboard key, also when playing on a controller), and the game's own ZR prompt for the shoutouts and the chat history is called **Chat Log**.
 
 Other useful keybinds:
 
@@ -259,6 +261,9 @@ Other useful keybinds:
 - Alt+Enter or F11: switches between windowed and full screen
 - F7: Cycle MSAA
 - F12: screenshot
+- Pause: pauses the game, with **PAUSED** over the dimmed picture; Pause, `ESC` or `ENTER` resumes it. Offline only:
+  it does nothing in a Hub, with Hunter Search on, or while the game saves. Its key is **Pause/Suspend** in Controls,
+  Keybinds (`[Controls] PauseKey`)
 
 ## Settings
 
@@ -274,7 +279,10 @@ Every setting is also in `mhgurecomp.ini`, with a comment above each one that ex
 - `[Display]`: `Mode` (Borderless / Fullscreen / Windowed), `Resolution`, `RenderResolution` (the 3D resolution),
   `AspectRatio` (Auto follows the window: 16:10 and anything wider fill it, narrower gets 16:10 with bars), `FOV`
   (1.0 = the game's), `UIAnchor` (Center keeps the HUD in the middle 16:9 on an ultrawide screen, Edges spreads it
-  to the sides)
+  to the sides). The window opens where it was when the game last closed, at that size (until `Resolution` changes) and on
+  the same monitor (full screen too), windowed or full screen as it was left with F11 / Alt+Enter (until `Mode`
+  changes),
+  kept in `window.txt` beside `mhgurecomp.ini` (not on Wayland, where programs can't place their windows)
 - `[Anti-aliasing]`: `MSAA` (Off / 2x / 4x / 8x), `FXAA` (On / Off), `FXAAMode` (Original / 3_11: FXAA 3.11 in
   place of GU's FXAA, sharper textures; default Original)
 - `[Upscaler]`: `FSR` (Off / On, default Off), `FSRQuality` (NativeAA / Quality / Balanced / Performance /

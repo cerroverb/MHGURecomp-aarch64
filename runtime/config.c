@@ -99,6 +99,7 @@
     .kbm_prompts = 1,                                                                               \
     .combo_window = COMBO_LENIENT,                                                                  \
     .chat_key = "/",                                                                                \
+    .pause_key = "Pause",                                                                           \
     .menu_chord = 1,                                                                                \
     .title_back_exit = 1,                                                                           \
     /* [Mouse] */                                                                                   \
@@ -143,7 +144,10 @@
     .menu_scale = 100,                                                                              \
     .updates = UPDATES_ASK,                                                                         \
     .save_location = "",                                                                            \
-    CONFIG_DUAL_SCREEN_DEFAULTS
+    CONFIG_DUAL_SCREEN_DEFAULTS                                                                     \
+    .backups_on = 1,                                                                                \
+    .save_backups = 10,                                                                             \
+    .backup_location = "",                                                                          \
 
 Config g_config = {CONFIG_DEFAULT_VALUES};
 Config config_defaults(void) { Config c = {CONFIG_DEFAULT_VALUES}; return c; }
@@ -398,6 +402,12 @@ static const char DEFAULT_INI[] =
     "; Default: /\n"
     "ChatKey = /\n"
     "\n"
+    "; Pause/Suspend: the key that pauses the game and resumes it (Esc and Enter resume it too). Offline only: not in a\n"
+    "; hub or with Hunter Search, and not while the game saves. A key's name as the settings menu shows it, or nothing\n"
+    "; for none\n"
+    "; Default: Pause\n"
+    "PauseKey = Pause\n"
+    "\n"
     "[Mouse]\n"
     "; Mouse sensitivity\n"
     "; Default: 1.0\n"
@@ -638,6 +648,21 @@ static const char DEFAULT_INI[] =
     "; Your save is not moved: copy save_0 there yourself. Takes effect at the next start\n"
     "SaveLocation =\n"
     "\n"
+    "[Save Backups]\n"
+    "; Each time the game saves, a copy of save_0's files goes in a folder named after the date and time.\n"
+    "; To restore one, close the game and copy its files into save_0. Off: no backups (those made stay)\n"
+    "; Default: On\n"
+    "Backups = On\n"
+    "\n"
+    "; How many backups are kept: past this many, the oldest is deleted\n"
+    "; Between 1 and 100\n"
+    "; Default: 10\n"
+    "BackupsKept = 10\n"
+    "\n"
+    "; PC only. The folder the save backups go in. Empty: a backups folder in the save folder, beside save_0.\n"
+    "; Takes effect at the next start\n"
+    "BackupLocation =\n"
+    "\n"
     "[Android]\n"
     "; Android only. The folder the save is kept in, so syncing software can keep it in step: the one that holds save_0. Empty: the app's own\n"
     "; folder. Set it with Save folder in the settings menu (Android tab): the app needs Android's \"All files access\"\n"
@@ -784,6 +809,8 @@ static bool parse_aspect(const char *v, float *out) {
 #define ERR_FOLDER "Invalid save folder (one line, no ';' or '#')."
 #define ERR_PANELS "Invalid panel list (one line, no ';' or '#')."
 #define ERR_WALLPAPER "Invalid wallpaper file name (one line, no ';' or '#')."
+#define ERR_BACKUPS "Backups to keep must be 1-100."
+#define ERR_BACKUP_FOLDER "Invalid backup folder (one line, no ';' or '#')."
 #define ERR_GAME_FOLDER "Invalid game files folder (one line, no ';' or '#')."
 #define ERR_HP "HP factors must be 0.05-20."
 #define ERR_VILLAGE "Invalid village HP or quest override count."
@@ -858,6 +885,7 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Controls", "TitleBackExit", title_back_exit, false),
     {"Controls", "ComboInputWindow", SET_CHOICE, F(combo_window), 0, 0, 0, "Lenient,Strict", NULL, false, ERR_MISC},
     {"Controls", "ChatKey", SET_TEXT, F(chat_key), sizeof g_config.chat_key, 0, 0, NULL, NULL, false, ERR_MISC},
+    {"Controls", "PauseKey", SET_TEXT, F(pause_key), sizeof g_config.pause_key, 0, 0, NULL, NULL, false, ERR_MISC},
     {"Mouse", "MouseSensitivity", SET_FLOAT, F(mouse_sensitivity), 0, 0.1f, 10.0f, NULL, NULL, false, ERR_VIEW},
     {"Mouse", "MouseSensitivityY", SET_FLOAT, F(mouse_sensitivity_y), 0, 0.1f, 10.0f, NULL, NULL, false, ERR_MOUSE},
     ON_OFF("Mouse", "MouseInvertY", mouse_invert_y, false),
@@ -919,6 +947,9 @@ const ConfigSetting g_settings[] = {
     {"Dual Screen", "Panels", SET_TEXT, F(bottom_panels), sizeof g_config.bottom_panels, 0, 0, NULL, NULL, false, ERR_PANELS},
     {"Dual Screen", "Wallpaper", SET_TEXT, F(bottom_wallpaper), sizeof g_config.bottom_wallpaper, 0, 0, NULL, NULL, false, ERR_WALLPAPER},
 #endif
+    ON_OFF("Save Backups", "Backups", backups_on, false),
+    {"Save Backups", "BackupsKept", SET_INT, F(save_backups), 0, 1, 100, NULL, NULL, false, ERR_BACKUPS},
+    {"Save Backups", "BackupLocation", SET_TEXT, F(backup_location), sizeof g_config.backup_location, 0, 0, NULL, NULL, true, ERR_BACKUP_FOLDER},
 };
 #undef ON_OFF
 #undef KEYS

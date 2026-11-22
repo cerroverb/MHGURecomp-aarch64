@@ -700,6 +700,59 @@ Test setup (scratchpad, not in the repo): quest 404 (Hunt a Volvidon) moved to t
 stage from; the Arena's b_m09em062_00 spawn), MHGU_QUICKHUNT=404, then the hunter walks from the waiting room (north
 2 s, east 2.7 s, north through the gate: an area change, so the hunter can't be placed there by poking its position).
 
+Uroktor's leap out of the ground (2026-11-22): fixed. Reported: alone (not in multiplayer), an Uroktor (ems040, small
+monster, species 0x1028) that drills up out of the ground snaps from the drill into standing instead of leaping into the
+air and landing; its half-out spit attack is fine. Action 7:44 (update 0x13085e8, sub-state +0x1a1): when the drill
+motion ends it stores a launch speed (size x 12.5, 100 here) to the vertical velocity, moves once with it (0x27d718:
+pos += vel * t + acc * t^2 / 2, t = the monster's step +0x1c, 2 at 30 fps), then sets the velocity to 25 and the gravity
++0x24 to -0.6. The airborne sub-state lands (0x2bf5a0, then mode 0 via 0x2bc8b0 puts it on the ground height +0x5b4)
+as soon as it is below ground + size x a species height (~150), rising or not. At 30 fps the launch lifts it 200 and it
+arcs up to 724 (4.8 s action); at 240 fps it lifts 25 and lands the next update (peak 29, 3.4 s). Fix (emjump.c
+emjump_launch, gen.py PATCHES 0x1308838, the launch speed's store): the speed that makes that one move 2v + 2a, as long
+as the 30 fps update's; untouched at 30 fps and below; MHGU_NO_EMJUMP=1 turns it off too. Checked at 240 fps: five
+natural leaps peak at 724-726, 4.8 s, and the height every 100 ms matches the 30 fps run within 1-2 units. Seen right in
+game by the user. Searched: no other call of the one-update move (0x27d718 / 0x27d7c4, 131 calls) is followed by a reset of
+the vertical velocity. Rig (scratchpad, C:\MHGURecompile\scratch-urok): quest 427 (Uroktor quest, Volcano), start area 4,
+then out and back in (STICK_DOWN 700 / STICK_UP 900 at 240 fps): small monsters aren't spawned in the area a hunt starts
+in with MHGU_START_AREA, only after an area change. MHGU_EMTRACE_ZAKO=2, acts.py (per action: length, height range) and
+curve.py (height every 100 ms of the leap). Finding the code: the zako set lists (quest\zako\emSetList, "ESD" blocks per
+area, species byte = ems number) gave 0x28 for Volcano / Volcanic Hollow only; interpwatch on status +0x44 with the
+class's vtable entries (0x1a15944) as the function list showed the writers.
+
+Running with the Moofy (2026-11-22): fixed. Reported: in Bherna, carrying the Moofy and running (R held) is far too
+fast at 240 fps; walking with it is right. The carry run (action function 0x494200, motions 0xc91 / 0xc92) moves the
+hunter by the animation (cModel root motion, 0xb55aa0, step-based) and in its state 1, every update the stick is held,
+also pushes them along their facing: 0x494308, `pos += (sin, 0, cos) * 2.5` (angle = player +0xfec x 2pi / 65536), no
+frame step: 75 units a second at 30 fps, 600 at 240. Walking has no push. Fix (runtime/hle/plcarry.c, gen.py PATCHES
+0x49430c, the `vmov.f32 s6, #2.5`): 2.5 x the player's step +0x1c / 2; the same at 30 fps. 0x49028c is the same code
+with motion 0x138f (not identified), patched the same (0x490380). MHGU_NO_PLCARRY=1: the original. Measured (one game,
+fps switched live, the test save; the user picked the Moofy up): 405 units/s at 30, 60, 120 and 240 fps (the original
+at 240: ~930). A scan of the player code (0x470000-0x4d0000) for `pos += ...` stores without the step found only these
+two per-update pushes (0x4ae390, 0x4be178, 0x4c89dc are one-off placements). Found with interpwatch on player +0x40
+(the town hunter, r0 of 0x48d1f0) with the player's vtable entries (0x1948534) as the function list. Not checked: the
+0x138f twin in game, eggs carried in a hunt.
+
+Monster turns and the frame rate (2026-11-21): Duramboros fixed, Deviljho not reproduced. Reported: one of Duramboros'
+spinning attacks far too fast at high frame rates; a Deviljho bite (calm, not enraged; not confirmed by the reporter).
+Rig (scratchpad, C:\MHGURecompile\scratch-emspeed): quest 627 (Duramboros alone) / 1007 (Deviljho alone),
+MHGU_START_AREA=1, MHGU_SUMMON=1200, MHGU_EMTRACE=2 (now with the heading, status +0x54, and the motion speed, status
++0x398, every update), `emsweep 7 0 90` at 30 and 240 fps side by side, then per action: length, path, peak speed,
+total turn and peak turn rate. Duramboros 7:32 (a charge ending in a long turn on the spot): at 30 fps 225 degrees in
+all, peak 180 deg/s; at 240 fps 1168 degrees, peak 1308 deg/s. Writer (interpwatch on +0x54): 0x10dc75c, turning by
+`C / ((C2 / speed) * step / 2)` per update, where the block before it (0x10dc6a8) has `C / (C2 / speed) * step / 2`:
+the same at 30 fps, 8x per update (64x in real time) at 240. Fix (runtime/hle/emturn.c, tools/gen.py PATCHES
+0x10dc744, its vdiv): the quotient times (step / 2)^2, the integer fraction carried per monster; MHGU_NO_EMTURN=1 the
+original. Checked: 7:32 at 240 fps 224 degrees, peak 179 deg/s (3 runs); 30 fps unchanged (225, 180). The other
+group 7 actions of Duramboros last, move and turn the same at both rates. A scan of main for a division by
+something made from the step (vldr [rN, #0x68] then vdiv within 16 instructions) finds this one only in monster code;
+the other heading writes that use the step (0x109a0dc, 0x109a3e8, 0x10e8b0c) multiply. Deviljho (em043, action code
+around 0x1075000-0x1085000): all 91 group 7 actions at 30 and 240 fps last the same, have the same motion speeds,
+paths and turns (differences only where the AI-driven aim differs between runs); his turns and moves go through the
+shared 0x277114 (heading) and 0x2c2864 (root motion), both stepped; his own unscaled +0x54 / +0x40 writes (0x107ca6c,
+0x107d9c8, 0x1079b00, 0x1079da8) are one-off offsets when a motion starts. Not covered: actions the sweep plays with
+the hunter straight ahead, so a bite that homes in on a hunter at its side was not seen turning; enraged vs calm
+variants were not told apart.
+
 Start in an area (2026-11-18, debug, runtime/hle/quickhunt.c): MHGU_START_AREA=<n> starts every hunt in area n of its map, by replacing the area the random start picked (town +0xc9, copied to sGameControl +0x49 by the town's move 0x8bdfd0 when departing) for low rank's camp too. With MHGU_QUICKHUNT=<quest>, straight from start-up into that area, e.g. MHGU_QUICKHUNT=204 MHGU_START_AREA=8 (Harvest Tour: Arctic Ridge). Checked on that: the game's pick was area 0, the hunter arrived on the snowfield of area 8 ("hunter in area 8" in the camera trace). An area number the map doesn't have is not checked. Not a teleport: it only acts when departing.
 
 Training dummy (2026-11-02, debug, runtime/hle/dummy.c): MHGU_DUMMY=1 holds the zone's first large monster in front of the hunter (240 cm, or MHGU_DUMMY=<cm>), in the hunter's area, its motion stopped, outside the camp: nothing can be hit in the camp. Every hit on it takes 1 HP and logs the damage it would have done, so attacks can be tested without chasing a monster; GU has no training area. Tested hidden on the unmodded game, quest 404 (Volvidon), Charge Blade: walk out of camp, hits logged per part. What it rests on: a player's weapon attack is one object at player+0x3020 (+0xc owner, +0x34 u16 its number, +0x38 s16 its motion value: damage is proportional to it, +0x5c / +0x60 frames until its hitbox opens and how long it stays open). A monster remembers the numbers that hit it (status +0x448, a fixed list; 0x36ba4c checks it in the collision update 0x36b15c): one hit per number, so a new number makes a new hit while the hitbox is open.
@@ -1421,6 +1474,49 @@ old way while on.
   exec.c draw_aniso: a draw without a depth test (HUD, menus, loading screen) keeps the game's own anisotropy; the same
   sampler still gets the setting on 3D draws (MHGU_SAMPLER_LOG: "used 1" in the loading screen, "used 16" in town).
   Checked with frames shot every 0.12 s at 16x: before, 3 of 5 loading frames had a seam; after, 0 of 16.
+
+## Pause/Suspend: [Controls] PauseKey (2026-11-22)
+
+- runtime/pause.c: the key (Pause by default; Esc and Enter also resume) holds the game's render thread in
+  nvnQueuePresentTexture after its present. The main thread then waits for it within a frame: a player-update fntrace
+  sent while paused fired only after the resume. The held thread presents the same image again at 60 Hz and builds the
+  overlay's frames itself (overlay_frame with its cpu), so the F1 menu and Forge's work meanwhile; the plugins'
+  forge_onNvnRender is not called for those (they would draw into the image again). PAUSED over a dimmed picture:
+  overlay.cpp draw_paused, on ImGui's background list (under the menus).
+- The guest's clock stops: rt_ticks reads pause_clock_ns (a seqlock over the paused time; now is read inside it, so a
+  time is never earlier than the stop). Checked: the game's frame step (Forge's dt, app +0x68) was 0.25 right after a
+  5.4 s pause at 240 fps. The audio mixer renders nothing while held (voices keep their place; the game's audio thread
+  still gets its events): the mixer's frame counter did not advance over a 6.9 s pause in quest 101.
+- Refused (a notice says why): ldn_offline false - a network in any state past Initialize, and for 15 s after one
+  closes, since Hunter Search closes its network for each scan and opens it again - or fs_writing (files open for
+  writing, a save mount with uncommitted changes, a commit and its backup). Checked: refused with Hunter Search on (12
+  presses over 24 s), allowed 16 s after turning it off; a press during Quit Game's save was refused, the next one after
+  it paused. Not checked: in an online Hub (same ldn state check), a movie, an area load.
+- Settings: the Pause/Suspend row in Keybinds and in Game actions' Keys (capture view CAPTURE_PAUSE = -2; Esc, Enter,
+  mouse buttons and the recomp's keys refused), shown on the keyboard drawing, red when the chat key or a keybind has
+  the same key. Forge's setKeybind refuses it as it does the chat key. Not on a controller (by design).
+- tests/test_settings_panel.cpp stops at its "fps" focus assertion; it does so on HEAD before this change too.
+
+## Android: CPU and GPU work not overlapping on an Adreno 725 (issue #444, 2026-11-22, open)
+
+- Report: POCO F5 (Turnip fork PurpleVK on KGSL), 37.7 fps in the village while the GPU is 69% busy and the submitting
+  thread waits in the GPU fence wait 67% of the time. CPU clocks barely change the frame rate.
+- Measured here (scratch-subs rig, town, MHGU_VK_STATS plus temporary counters, since removed): the game makes 2
+  submissions a frame (its command list, then our present), so the 8-slot submission ring (exec.c SUBS) is 4 frames
+  deep and never waited. Its one nvnSyncWait a frame comes right after submitting frame N and waits for frame N-1's
+  present submission: one frame of overlap, as on the Switch. With a temporary CPU spin and GPU buffer fills in
+  backend_execute, 10 ms CPU + 11 ms GPU ran at 89 fps (11 ms alone: 89), and 6 ms + ~17 ms at 58.7 fps at the 60
+  cap: frame time is max(CPU, GPU) here, and no snapping to 30 fps. A thread blocked 67% in the fence wait is also
+  what an overlapped GPU-bound frame looks like. What doesn't fit is the 31% of the phone's GPU time that is idle.
+- Mesa's Turnip on KGSL emulates timeline semaphores, which puts its queue in deferred submit mode; deferral only
+  holds submissions that wait on a timeline, and ours wait on nothing but the acquire semaphore, so nothing there
+  explains it either (read, not run).
+- MHGU_CONTROL `gpuprof` now covers two frames and every submission: a top-of-pipe timestamp where each main command
+  buffer begins ("GPU idle: waiting for this submission", shown when it's 0.5 µs or more), the end of each submission
+  and of the present's, per-frame "GPU busy / idle", and the CPU's submit times and its GPU waits in that time.
+  Frame 2's idle time before the game's work is the number that says whether the CPU keeps the GPU fed; idle before
+  the present submission points at the acquire semaphore (the display) instead. At the 60 cap on the desktop: 15.4 ms
+  idle before the game's work, as expected for 1.1 ms of GPU work. Next: that output from the reporter's phone.
 
 ## Next steps
 1. Modding tools: decode resident.arc tables (weapon00..14 Base/Level data: record layouts derivable from the game

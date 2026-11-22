@@ -98,6 +98,7 @@ typedef struct {
                               // their routers let them (hole punching; they see each other's IP address), else through the server
     char chat_key[32];        // [Controls] ChatKey: the key that opens a line of chat (runtime/hle/chat.c), by SDL's
                               // name for it ("/", "Y"...); "" none
+    char pause_key[32];       // [Controls] PauseKey: Pause/Suspend's key (runtime/pause.h), by SDL's name; "" none
     int fxaa_mode;            // [Anti-aliasing] FXAAMode: FXAA_*, which FXAA draws while FXAA is on
     int aniso;                // [Graphics] AnisotropicFiltering: 1 (off: the game's own), 2, 4, 8, 16: at least that much on
                               // the game's mipmapped textures (nvn/vulkan/textures.c vk_sampler)
@@ -133,6 +134,9 @@ typedef struct {
     int show_battery;         // [Performance] ShowBattery: BATTERY_*, the battery's charge beside the frame rate or alone
     char save_location[256];  // [Application] SaveLocation (PC): the folder holding the save (save_0/), "" the default
                               // (%APPDATA%\MHGURecomp\save, ~/.local/share/MHGURecomp/save: main.c)
+    int backups_on;           // [Save Backups] Backups: a copy of the save at each save (services/fs.c)
+    int save_backups;         // [Save Backups] BackupsKept: how many of those copies are kept, 1-100
+    char backup_location[256]; // [Save Backups] BackupLocation (PC): the folder the backups go in, "" <save folder>/backups
     char save_dir[256];       // [Android] SaveFolder: the folder holding the save (save_0/), "" the app's own (fs.c)
     char game_dir[256];       // [Android] GameFolder: the folder holding exefs/ and romfs/, "" the app's own (main.c)
     char ldn_ryu_servers[256]; // [Multiplayer] RyuServers: Ryujinx LDN servers searched for crossplay (host[:port], comma separated); "" none
@@ -251,6 +255,7 @@ int config_live_menu_confirm(void);
 int config_live_background_input(void);
 int config_live_combo_window(void);
 int config_live_chat_key(void);  // [Controls] ChatKey as an SDL scancode (0: none)
+int config_live_pause_key(void);  // [Controls] PauseKey as an SDL scancode (0: none)
 int config_live_bind(int bind, int slot);  // [Keybinds]: one of BIND_*'s keys (Config.binds, or a mod's for now)
 // A mod's keys for BIND_* for now (runtime/forge.c forge_input_setKeybind), over the settings' own; NULL: theirs again.
 // Not saved: mhgurecomp.ini and the settings menu keep the player's.
@@ -292,6 +297,7 @@ void config_live_ldn_join(char *join, size_t size);  // [Multiplayer] Join: the 
 int config_live_ldn_direct(void);  // [Multiplayer] Direct (net/ldn.c: for the next player link)
 int config_live_sync_small_monsters(void);  // [Multiplayer] SyncSmallMonsters (net/emsync.c)
 int config_live_lag_compensation(void);  // [Multiplayer] LagCompensation (net/hitsync.c)
+int config_live_save_backups(void);     // [Save Backups] BackupsKept while Backups is on, else 0 (services/fs.c)
 int config_live_bonus_content(void);    // [Bonus Content] BonusContent: each time the game opens a save (services/bonus.c)
 int config_live_discord(void);         // [Discord] RichPresence
 int config_live_discord_hunter(void);  // [Discord] ShowHunter
