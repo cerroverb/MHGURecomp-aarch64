@@ -1,4 +1,4 @@
-// The lease and the surface on the leased panel, for runtime/nvn/vulkan/second_display.c (plain C). New glue for
+// The lease and the surface on the leased panel, for runtime/nvn/vulkan/second_display_drmlease.c (plain C). New glue for
 // MHGU Recomp (MIT); the code behind it is Azahar's: drm_lease_window.cpp, drm_display_surface.cpp.
 #pragma once
 #include <stdbool.h>
@@ -17,9 +17,11 @@ typedef struct {
 } DrmLeaseOutput;
 
 // Asks the compositor for a connector (NULL or "": the first internal panel it offers). Blocks up to two timeouts of
-// 5 s, so it runs on second_display.c's thread. touch_device: NULL or "" reads no touch; else an evdev path, a device
+// 5 s, so it runs on second_display_drmlease.c's thread. touch_device: NULL or "" reads no touch; else an evdev path, a device
 // name or "auto".
 bool drm_lease_acquire(const char *connector, int rotation, const char *touch_device, DrmLeaseOutput *out);
+// Would drm_lease_acquire find that connector? Asks the compositor without leasing (blocks as drm_lease_acquire can).
+bool drm_lease_offered(const char *connector);
 bool drm_lease_alive(void);  // reads the compositor's events without waiting; false once the lease has ended
 void drm_lease_release(void);
 
@@ -27,6 +29,9 @@ void drm_lease_release(void);
 // VK_EXT_direct_mode_display and VK_EXT_acquire_drm_display.
 VkSurfaceKHR drm_lease_create_surface(VkInstance instance, VkPhysicalDevice phys, const DrmLeaseOutput *output);
 void drm_lease_release_display(VkPhysicalDevice phys);  // gives back what drm_lease_create_surface acquired
+
+// The touch reader's thread: a finger at panel pixel x, y, or lifted. Defined by the caller (second_display_drmlease.c).
+void second_display_touch(bool down, unsigned x, unsigned y);
 
 #ifdef __cplusplus
 }

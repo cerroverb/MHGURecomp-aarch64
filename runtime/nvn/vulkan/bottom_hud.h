@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h>
-#include "../../config.h"  // (MHGU_DUAL_SCREEN)
+#include "../../config.h"  // (MHGU_DUAL_SCREEN: Android builds)
 
 #ifdef MHGU_DUAL_SCREEN
 // On while the bottom image is made: the panel is showing (second_display.c) or MHGU_BOTTOM_HUD_TEST is set. All the

@@ -2,7 +2,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 // Ported from Azahar-Enhanced (https://github.com/virtudude/azahar, branch drm-leasing) commit d16299140,
-// src/citra_qt/drm_lease/drm_lease_client.h. Edits for MHGU Recomp: include paths, IsFinished(), a timeout on the first roundtrip.
+// src/citra_qt/drm_lease/drm_lease_client.h. Edits for MHGU Recomp: include paths, IsFinished(), a timeout on the first roundtrip, Acquire's offer_only.
 
 #pragma once
 
@@ -33,8 +33,9 @@ public:
     /// specific offer; when empty, the first eligible offer is used, where
     /// internal_only restricts eligibility to internal panel types
     /// (DSI/eDP/LVDS/DPI) so auto-detection cannot grab an external display
-    /// or VR headset. Blocks until the compositor answers.
-    bool Acquire(const std::string& connector_name, bool internal_only);
+    /// or VR headset. Blocks until the compositor answers. offer_only (MHGU
+    /// Recomp): true once such a connector is offered, without leasing it.
+    bool Acquire(const std::string& connector_name, bool internal_only, bool offer_only = false);
 
     /// Non-blocking dispatch so compositor events (notably finished) are
     /// observed while the lease is held. Call regularly.

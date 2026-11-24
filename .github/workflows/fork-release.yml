@@ -103,7 +103,8 @@ jobs:
           left=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
           [ "$left" = "$FILES" ] || { echo "::error::Unexpected files in conflict: $left"; exit 1; }
           if grep -nE '^(<<<<<<<|=======$|>>>>>>>)' $FILES; then echo "::error::Conflict markers left"; exit 1; fi
-          git add $FILES && git commit -q --no-edit
+          # (as cerroverb: the conflict step leaves its own git identity behind)
+          git add $FILES && GIT_AUTHOR_NAME=cerroverb GIT_AUTHOR_EMAIL=cerroverb@users.noreply.github.com GIT_COMMITTER_NAME=cerroverb GIT_COMMITTER_EMAIL=cerroverb@users.noreply.github.com git commit -q --no-edit
 
       - name: Android-specific changes (for the ARM build to look at)
         run: |
@@ -189,7 +190,7 @@ jobs:
           echo "repaired: $changed"
           if echo "$changed" | grep -qE '^(generated|tools|\.github)/'; then echo "::error::The repair changed protected files"; exit 1; fi
           git diff
-          git add -u && git commit -q -m "Repair the build for $UP (Claude Code)"
+          git add -u && GIT_AUTHOR_NAME=cerroverb GIT_AUTHOR_EMAIL=cerroverb@users.noreply.github.com GIT_COMMITTER_NAME=cerroverb GIT_COMMITTER_EMAIL=cerroverb@users.noreply.github.com git commit -q -m "Repair the build for $UP"
           bash -e "$RUNNER_TEMP/build.sh"
 
       - name: Lifter test

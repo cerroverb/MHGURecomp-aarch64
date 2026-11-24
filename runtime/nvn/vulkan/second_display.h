@@ -1,6 +1,6 @@
 // The bottom screen's panel on a second display (bottom_hud.c makes its picture): second_display.c (what every platform
-// shows, and in a DUAL_SCREEN=1 build the panel leased from the compositor), second_display_android.c (Android's second
-// display: android/java/.../DualScreen.java), second_display_desktop.c (PC: an SDL window on another monitor).
+// shows), second_display_android.c (Android's second display: android/java/.../DualScreen.java),
+// second_display_desktop.c (PC: an SDL window on another monitor).
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -44,17 +44,6 @@ bool second_display_compose(uint32_t *frame, uint32_t w, uint32_t h, SecondDispl
 // Wallpaper or no file. *changed: not the last call's (every call during a fade). One thread only (the one composing,
 // or bottom_hud.c's test mode).
 const uint32_t *second_display_wallpaper(uint32_t w, uint32_t h, bool *changed);
-
-#ifdef MHGU_SECOND_DISPLAY
-// A panel the compositor leases to the game (drm-lease-v1), on a thread of its own: second_display.c.
-// Once, from backend_init, with the game's GPU (vendorID, deviceID). enabled false ([Dual Screen] SecondDisplay Off,
-// MHGU_SECOND_DISPLAY=0): returns at once and nothing else in this file ever runs. Otherwise it starts the thread and
-// returns at once too: the lease and all the Vulkan work happen there, and a failure only means no second panel.
-void second_display_init(bool enabled, uint32_t vendor, uint32_t device);
-
-// The touch reader's thread (third_party/azahar-drm-lease): a finger at panel pixel x, y, or lifted.
-void second_display_touch(bool down, unsigned x, unsigned y);
-#endif
 #ifdef __cplusplus
 }
 #endif

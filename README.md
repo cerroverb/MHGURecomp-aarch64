@@ -661,14 +661,15 @@ Tested so far by cross-compiling on x86-64 (clang `--target=aarch64-linux-gnu`) 
 `tools/test_lift.py`, with its harness built for aarch64, passes for `main` and `sdk`, and the game starts and reaches
 a quest with the null renderer. It has also been played on an ARM handheld, an AYN Odin 3 Ultra running Armada Linux.
 
-The 64-bit ARM releases are built with `DUAL_SCREEN=1`: on a dual-screen handheld (tested on an AYN Thor running
-Armada Linux in Game Mode) the game can show MHXX's bottom screen on the second panel, through a lease from the
-compositor. Turn on Bottom screen in the settings menu (Display, Dual Screen; off by default, `[Dual Screen]
-SecondDisplay`) and restart. The panels (Hunter Arts, map, item bar, target camera and more, placed as in MHXX's Panel
-Customize) show the game's own HUD parts there and take touch, and the bottom screen shows a wallpaper from the
-`wallpapers` folder, dark grey or black around them. The code is in `runtime/nvn/vulkan/second_display.c` and
-`bottom_hud.c`, with the lease and touch code from Azahar in `third_party/azahar-drm-lease` (GPLv2 or later, so a
-program built with `DUAL_SCREEN=1` is under the GPL).
+The 64-bit ARM releases are built with `DUAL_SCREEN=1`, which adds one more place for the bottom screen. When the
+compositor leases a panel to the game (gamescope in Armada Linux's Game Mode on a dual-screen handheld such as the AYN
+Thor), the bottom screen goes on that panel through the lease, and touch is read from the panel's own touchscreen.
+Without such a panel (a desktop session, where both screens are outputs of their own) the window on another monitor is
+used as in every other build. The setting is the same Bottom screen row in the settings menu (Display, Dual Screen, off
+by default, `[Dual Screen] SecondDisplay`). The lease backend is `runtime/nvn/vulkan/second_display_drmlease.c`, with
+the lease and touch code from Azahar in `third_party/azahar-drm-lease` (GPLv2 or later, so a program built with
+`DUAL_SCREEN=1` is under the GPL). The release archives also carry a few wallpapers in `wallpapers`
+(`dual_screen/wallpapers/README.txt`).
 
 From Windows, the Linux build can be made in WSL with Arch Linux (`wsl --install -d archlinux`), straight from the
 Windows checkout, into its own folders so the Windows build is left alone:

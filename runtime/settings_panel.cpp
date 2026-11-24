@@ -2425,9 +2425,6 @@ void dual_screen_rows(std::vector<Row> &r) {
     Config &c = s.draft;
     header(r, "dual.header", tr("Dual screen"));
     bool there = config_second_display_available();
-#ifdef MHGU_SECOND_DISPLAY
-    there = true;  // (DUAL_SCREEN=1 builds: the panel is leased when the game starts, there is nothing to look for here)
-#endif
 #ifdef __ANDROID__
     add_bool(r, "dual", "Bottom screen (dual-screen handheld)", &c.second_display, ini("SecondDisplay"));
     r.back().help = tr("MHXX's bottom screen on this device's second screen: the item bar, the map, the Hunter Arts and the other panels you pick leave the main screen and show there, and touching them works like on the 3DS (use a Hunter Art, the item, switch the target). For dual-screen handhelds such as the AYN Thor; needs a device with a second screen.");

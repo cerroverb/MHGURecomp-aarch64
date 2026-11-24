@@ -22,7 +22,6 @@
 #include "../../overlay.h"
 #include "fsr.h"
 #include "hdr.h"
-#include "second_display.h"
 #include "vk.h"
 #ifdef MHGU_DUAL_SCREEN
 #include "bottom_hud.h"
@@ -1160,14 +1159,9 @@ void backend_init(void) {
     vk_fsr_init();  // ([Upscaler] FSR: fsr.c)
     create_swapchain();
 #ifdef MHGU_DUAL_SCREEN
-#ifdef MHGU_SECOND_DISPLAY
-    // (DUAL_SCREEN=1 builds: the panel leased from the compositor, second_display.c)
-    second_display_init(g_config.second_display, g_vk.props.vendorID, g_vk.props.deviceID);
-#else
     // ([Dual Screen] SecondDisplay: the bottom screen on Android's second display, second_display_android.c; or, test,
     // MHGU_BOTTOM_HUD_TEST: its picture saved in shots/ without one)
     if (!bottom_hud_test_init()) second_display_apply();
-#endif
 #endif
     atexit(exit_handler);
     pthread_t watch;

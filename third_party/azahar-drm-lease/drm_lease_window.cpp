@@ -227,6 +227,15 @@ bool drm_lease_acquire(const char* connector, int rotation, const char* touch_de
     return true;
 }
 
+bool drm_lease_offered(const char* connector) {
+    if (!drm_lease_dl_open()) {
+        return false;
+    }
+    DrmLeaseClient probe;
+    const bool explicit_connector = connector && connector[0] != '\0';
+    return probe.Acquire(explicit_connector ? connector : "", !explicit_connector, true);
+}
+
 bool drm_lease_alive(void) {
     if (!client) {
         return false;

@@ -167,7 +167,6 @@ typedef struct {
 #define MHGU_DUAL_SCREEN 1
 #endif
 enum { BOTTOM_BG_WALLPAPER, BOTTOM_BG_DARK, BOTTOM_BG_BLACK };
-#define BOTTOM_WALLPAPER_DEFAULT "mhxx_blue.bmp"
 #define BOTTOM_PANELS_DEFAULT "itembar@0,0 map@0,1 arts3v@2,0"  // (MHXX's quest screen: item, map below, Hunter Arts right)
 // The hub server used when ini Server is empty (runtime/net/ldn.c, server/): the project's public one (an Oracle
 // Cloud VM; a DuckDNS name, so it can move without a release). "" = no default.

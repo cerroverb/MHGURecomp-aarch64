@@ -12,7 +12,7 @@
 #include <string>
 #include <thread>
 
-// The game's side (runtime/nvn/vulkan/second_display.c): a finger at panel pixel x, y (down false: lifted).
+// The game's side (runtime/nvn/vulkan/second_display_drmlease.c): a finger at panel pixel x, y (down false: lifted).
 extern "C" void second_display_touch(bool down, unsigned x, unsigned y);
 
 namespace Frontend {

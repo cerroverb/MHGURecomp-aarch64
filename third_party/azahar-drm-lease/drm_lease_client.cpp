@@ -2,7 +2,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 // Ported from Azahar-Enhanced (https://github.com/virtudude/azahar, branch drm-leasing) commit d16299140,
-// src/citra_qt/drm_lease/drm_lease_client.cpp. Edits for MHGU Recomp: include paths, wayland-client opened at run time (drm_lease_dl.h), a timeout on the first roundtrip.
+// src/citra_qt/drm_lease/drm_lease_client.cpp. Edits for MHGU Recomp: include paths, wayland-client opened at run time (drm_lease_dl.h), a timeout on the first roundtrip, Acquire's offer_only.
 
 #include <algorithm>
 #include <cerrno>
@@ -271,7 +271,7 @@ bool IsInternalConnector(const std::string& name) {
 }
 } // namespace
 
-bool DrmLeaseClient::Acquire(const std::string& connector_name, bool internal_only) {
+bool DrmLeaseClient::Acquire(const std::string& connector_name, bool internal_only, bool offer_only) {
     // Gamescope sessions hide WAYLAND_DISPLAY from clients so games pick
     // X11, and provide the compositor socket via GAMESCOPE_WAYLAND_DISPLAY.
     // Prefer it: with WAYLAND_DISPLAY unset, the default connection could
@@ -335,6 +335,10 @@ bool DrmLeaseClient::Acquire(const std::string& connector_name, bool internal_on
         LOG_INFO(Frontend, "drm-lease: no eligible connector offered (wanted '{}', {} offered)",
                  connector_name.empty() ? "any internal" : connector_name, connectors.size());
         return false;
+    }
+    if (offer_only) {
+        LOG_INFO(Frontend, "drm-lease: connector '{}' is offered", chosen->name);
+        return true;
     }
 
     // Snapshot before dispatching further: the dispatch below may

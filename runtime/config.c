@@ -26,12 +26,6 @@
     {SDL_SCANCODE_Q}, {SDL_SCANCODE_E}, {SDL_SCANCODE_TAB}, {SDL_SCANCODE_T}, {SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER}, \
     {SDL_SCANCODE_BACKSPACE}, {SDL_SCANCODE_UP}, {SDL_SCANCODE_DOWN}, {SDL_SCANCODE_LEFT}, {SDL_SCANCODE_RIGHT},          \
     {SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL}, {SDL_SCANCODE_LALT, SDL_SCANCODE_RALT}, {KEY_WHEEL_UP}, {KEY_WHEEL_DOWN}}
-#ifdef MHGU_DUAL_SCREEN
-#define CONFIG_DUAL_SCREEN_DEFAULTS .second_display = 0, .bottom_panels = BOTTOM_PANELS_DEFAULT,  /* (off: turned on in the menu; MHXX's quest layout) */ \
-    .bottom_background = BOTTOM_BG_WALLPAPER, .bottom_wallpaper = BOTTOM_WALLPAPER_DEFAULT,
-#else
-#define CONFIG_DUAL_SCREEN_DEFAULTS
-#endif
 // [Graphics] BoldText: on by default on Android (a phone's small screen reads the bolder letters more easily)
 #ifdef __ANDROID__
 #define BOLD_TEXT_DEFAULT 1
@@ -148,7 +142,6 @@
     .menu_scale = 100,                                                                              \
     .updates = UPDATES_ASK,                                                                         \
     .save_location = "",                                                                            \
-    CONFIG_DUAL_SCREEN_DEFAULTS                                                                     \
     .backups_on = 1,                                                                                \
     .save_backups = 10,                                                                             \
     .backup_location = "",                                                                          \
@@ -836,8 +829,6 @@ static bool parse_aspect(const char *v, float *out) {
 #define ERR_SERVER "Invalid hub server or matchmaking key (no newlines, ';' or '#')."
 #define ERR_CROSSPLAY "Invalid emulator crossplay address, name or password (no newlines, ';' or '#')."
 #define ERR_FOLDER "Invalid save folder (one line, no ';' or '#')."
-#define ERR_PANELS "Invalid panel list (one line, no ';' or '#')."
-#define ERR_WALLPAPER "Invalid wallpaper file name (one line, no ';' or '#')."
 #define ERR_BACKUPS "Backups to keep must be 1-100."
 #define ERR_BACKUP_FOLDER "Invalid backup folder (one line, no ';' or '#')."
 #define ERR_GAME_FOLDER "Invalid game files folder (one line, no ';' or '#')."
@@ -982,12 +973,6 @@ const ConfigSetting g_settings[] = {
     {"Application", "MenuScale", SET_INT, F(menu_scale), 0, 50, 200, NULL, NULL, false, ERR_SCALE},
     {"Application", "Updates", SET_CHOICE, F(updates), 0, 0, 0, "Ask,Auto|automatic,Off|never", NULL, false, ERR_UPDATES},
     {"Application", "SaveLocation", SET_TEXT, F(save_location), sizeof g_config.save_location, 0, 0, NULL, NULL, true, ERR_FOLDER},
-#ifdef MHGU_DUAL_SCREEN
-    ON_OFF("Dual Screen", "SecondDisplay", second_display, true),
-    {"Dual Screen", "Background", SET_CHOICE, F(bottom_background), 0, 0, 0, "Wallpaper,Dark,Black", NULL, false, ERR_MISC},
-    {"Dual Screen", "Panels", SET_TEXT, F(bottom_panels), sizeof g_config.bottom_panels, 0, 0, NULL, NULL, false, ERR_PANELS},
-    {"Dual Screen", "Wallpaper", SET_TEXT, F(bottom_wallpaper), sizeof g_config.bottom_wallpaper, 0, 0, NULL, NULL, false, ERR_WALLPAPER},
-#endif
     ON_OFF("Save Backups", "Backups", backups_on, false),
     {"Save Backups", "BackupsKept", SET_INT, F(save_backups), 0, 1, 100, NULL, NULL, false, ERR_BACKUPS},
     {"Save Backups", "BackupLocation", SET_TEXT, F(backup_location), sizeof g_config.backup_location, 0, 0, NULL, NULL, true, ERR_BACKUP_FOLDER},
@@ -1474,9 +1459,6 @@ void config_load(void) {
     if ((e = getenv("MHGU_FSR_OBJMOTION"))) g_config.fsr_objmotion = atoi(e) != 0;
     if ((e = getenv("MHGU_FSR_ANIMSURF"))) g_config.fsr_animsurf = atoi(e) != 0;
     if ((e = getenv("MHGU_FSR_SHARPNESS")) && strtof(e, NULL) >= 0.0f && strtof(e, NULL) <= 1.0f) g_config.fsr_sharpness = strtof(e, NULL);
-#ifdef MHGU_DUAL_SCREEN
-    if ((e = getenv("MHGU_SECOND_DISPLAY"))) g_config.second_display = atoi(e) != 0;
-#endif
     if ((e = getenv("MHGU_FSR_REACTIVE")) && strtof(e, NULL) >= 0.0f && strtof(e, NULL) <= 1.0f) g_config.fsr_reactive = strtof(e, NULL);
     if (g_config.hdr && g_config.fsr) {  // (FSR's input stays 8-bit: the picture would be SDR-bright, nvn/vulkan/hdr.c)
         LOG("[config] HDR is on: FSR off\n");

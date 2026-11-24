@@ -183,12 +183,6 @@ ifeq ($(ARCH),aarch64)
 OSFLAGS  += -fsigned-char
 GENFLAGS += -fsigned-char
 endif
-# DUAL_SCREEN=1: the bottom screen of a dual-screen handheld as a setting ([Dual Screen] SecondDisplay, off by default):
-# runtime/nvn/vulkan/second_display.c and bottom_hud.c, third_party/azahar-drm-lease (GPLv2 or later: the program built
-# with it is under the GPL). wayland-client and libdrm: headers here, opened at run time.
-ifeq ($(DUAL_SCREEN),1)
-OSFLAGS  += -DMHGU_DUAL_SCREEN
-endif
 
 # GAMELIB_ID: what the game code library is compiled against. A library with another id is refused at startup.
 GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/neon.py tools/nso.py tools/gamelib_entry.c \
@@ -238,7 +232,7 @@ IMGUI_OBJ := $(patsubst $(IMGUI)/%.cpp,$(O)/imgui/%.o,$(IMGUI_SRC))
 # (-fvisibility=hidden: without it the executable exports Dear ImGui's C++ symbols, and an overlay that links the
 # system ImGui (MangoHud -> libimgui.so.1) binds its HUD's calls into ours: its 1.91 ImFontAtlas handed to our 1.92
 # code crashes at swap-chain creation. Our own code and the Forge plugins' ImGui thunks bind inside the executable.)
-IMGUIFLAGS := -O2 -g -fvisibility=hidden -DCIMGUI_NO_EXPORT -I$(IMGUI) -I$(IMGUI)/imgui $(LIB_INC) $(filter -DMHGU_DUAL_SCREEN,$(OSFLAGS))
+IMGUIFLAGS := -O2 -g -fvisibility=hidden -DCIMGUI_NO_EXPORT -I$(IMGUI) -I$(IMGUI)/imgui $(LIB_INC)
 # (vendored VulkanMemoryAllocator fallback: -I on a missing dir is ignored, so MSYS2 builds
 # with the system vulkan-memory-allocator package are unaffected)
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Ithird_party/vk_mem_alloc -I$(IMGUI) -Ithird_party/enet/include $(OSFLAGS) $(LIB_INC)
@@ -270,13 +264,19 @@ RT_SRC   := $(filter-out runtime/nvn/vulkan/%,$(RT_SRC))
 RT_CXX   :=
 else
 RT_CXX   := $(O)/rt/nvn/vulkan/vma.o $(FSR_OBJ)
+# DUAL_SCREEN=1: the bottom screen ([Dual Screen] SecondDisplay) also on a panel the compositor leases (drm-lease-v1, a
+# dual-screen handheld's second panel in gamescope): runtime/nvn/vulkan/second_display_drmlease.c and
+# third_party/azahar-drm-lease (GPLv2 or later: the program built with it is under the GPL). Without a leasable panel
+# second_display_desktop.c runs, its second_display_tick called from second_display_drmlease.c's.
+# wayland-client and libdrm: headers here, opened at run time.
 ifeq ($(DUAL_SCREEN),1)
 LEASE     := third_party/azahar-drm-lease
 LEASE_GEN := $(O)/lease
 LEASE_OBJ := $(patsubst $(LEASE)/%.cpp,$(LEASE_GEN)/%.o,$(wildcard $(LEASE)/*.cpp)) $(LEASE_GEN)/drm-lease-v1-protocol.o
 LEASE_INC := -I$(LEASE) -I$(LEASE_GEN) -idirafter /usr/include/libdrm
 RT_CXX    += $(LEASE_OBJ)
-RTFLAGS   += -DMHGU_SECOND_DISPLAY -I$(LEASE)
+RTFLAGS   += -DMHGU_DRM_LEASE -I$(LEASE)
+$(O)/rt/nvn/vulkan/second_display_desktop.o: RTFLAGS += -Dsecond_display_tick=second_display_desktop_tick
 $(LEASE_GEN)/drm-lease-v1-client-protocol.h: $(LEASE)/drm-lease-v1.xml
 	@mkdir -p $(dir $@)
 	wayland-scanner client-header $< $@
