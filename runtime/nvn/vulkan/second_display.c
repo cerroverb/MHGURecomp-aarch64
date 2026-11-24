@@ -1,3 +1,7 @@
+// The bottom screen's panel as every platform shows it (second_display.h): the game's bottom picture (bottom_hud.c), the
+// background before and after a quest, the wallpapers. Putting it on a display is second_display_android.c's and
+// second_display_desktop.c's, or, in a DUAL_SCREEN=1 build (MHGU_SECOND_DISPLAY), the panel leased below.
+//
 // Second display: a panel the compositor leases to the game (drm-lease-v1), driven directly through VK_KHR_display while
 // the game plays in its normal window. On Armada's gamescope that is the bottom panel of a dual-screen handheld. It shows
 // the background until the game's first bottom picture of a quest (bottom_hud.c) is ready, then that picture, and the
@@ -21,30 +25,37 @@
 // The lease is held for the process' life; closing the process gives it back to the compositor.
 #ifdef MHGU_SECOND_DISPLAY
 #define _GNU_SOURCE
+#endif
+#include "../../config.h"
+#ifdef MHGU_DUAL_SCREEN
 #include <dirent.h>
 #include <errno.h>
-#include <pthread.h>
-#include <signal.h>
-#include <stdatomic.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
+#include <SDL3/SDL.h>
+#ifdef MHGU_SECOND_DISPLAY
+#include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
-#include <time.h>
 #include <unistd.h>
-#include <math.h>
 #include <vulkan/vulkan.h>
-#include <SDL3/SDL.h>
-
-#include "../../config.h"
 
 #include "drm_lease.h"
+#endif
+
+#include "../../rt.h"
 #include "bottom_hud.h"
 #include "second_display.h"
 
-#define SD_LOG(...) fprintf(stderr, "[second-display] " __VA_ARGS__)
+#define SD_LOG(...) LOG("[second-display] " __VA_ARGS__)
+
+#ifdef MHGU_SECOND_DISPLAY
 #define MAX_IMAGES 8
 
 static uint32_t gpu_vendor, gpu_device;
@@ -91,13 +102,14 @@ static void upright_size(uint32_t *w, uint32_t *h) {
     *h = turned ? s.extent.width : s.extent.height;
 }
 
-// The wallpapers ([Dual Screen] Background = Wallpaper: Wallpaper names a file in wallpapers/, empty each in turn),
+#endif
+
+// ---- the wallpapers ([Dual Screen] Background = Wallpaper: Wallpaper names a BMP in wallpapers/, empty each in turn),
 // loaded once when the setting changes, in the picture's own RGBA layout: a change every 30 s only picks another.
 #define WALLPAPERS_MAX 16
 #define WALLPAPER_SECONDS 30
 #define WALLPAPER_FADE_MS 1000  // (each change fades from one to the next over this time)
 static uint32_t *wallpapers[WALLPAPERS_MAX];
-static const uint32_t *wallpaper;  // (the one hud_copy puts round the panels: second_display_wallpaper's)
 static int nwallpapers;
 
 // One BMP of wallpapers/ into w x h, scaled to cover and cropped at its centre. NULL: no such file.
@@ -147,12 +159,6 @@ static int load_wallpapers(uint32_t w, uint32_t h, uint32_t **out, int max) {
     return got;
 }
 
-static uint64_t now_ms(void) {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
-}
-
 // out = a faded towards b by t / 256 (opaque RGBA8), two channels per multiply.
 static void blend_wallpapers(uint32_t *out, const uint32_t *a, const uint32_t *b, size_t n, uint32_t t) {
     for (size_t i = 0; i < n; i++) {
@@ -168,7 +174,7 @@ const uint32_t *second_display_wallpaper(uint32_t w, uint32_t h, bool *changed) 
     static char name[sizeof g_config.bottom_wallpaper];
     static uint64_t shown_at;
     static uint32_t *faded;  // (the picture between the two while they fade)
-    uint64_t now = now_ms();
+    uint64_t now = SDL_GetTicks();
     *changed = false;
     if (background != g_config.bottom_background || strcmp(name, g_config.bottom_wallpaper)) {
         background = g_config.bottom_background;
@@ -194,18 +200,49 @@ const uint32_t *second_display_wallpaper(uint32_t w, uint32_t h, bool *changed) 
     return nwallpapers ? wallpapers[shown] : NULL;
 }
 
-// The game's bottom picture (RGBA8, upright, w x h: bottom_hud.c) into the panel's pixels, turned and opaque.
+// ---- the picture
+typedef struct {
+    uint32_t *frame, w, h;
+    const uint32_t *wallpaper;
+    bool quest;  // (a quest picture: its panels kept, the wallpaper round them; else all wallpaper)
+} Copy;
+
+// The game's bottom picture (RGBA8, w x h: bottom_hud.c) into the frame, opaque, with the wallpaper round the panels.
 static void hud_copy(const uint32_t *rgba, uint32_t w, uint32_t h, void *ctx) {
-    bool quest = ctx == NULL;  // (a quest picture: its panels kept, the wallpaper round them; else all wallpaper)
-    bool bgr = s.format == VK_FORMAT_B8G8R8A8_UNORM || s.format == VK_FORMAT_B8G8R8A8_SRGB;
+    const Copy *c = ctx;
+    if (w != c->w || h != c->h) return;
     for (uint32_t v = 0; v < h; v++)
         for (uint32_t u = 0; u < w; u++) {
             uint32_t p = rgba[v * w + u];
-            if (wallpaper && (!quest || !bottom_hud_covers(u, v, w, h))) p = wallpaper[v * w + u];
-            put(u, v, 0xff000000u | (bgr ? (p & 0xff00u) | (p >> 16 & 0xffu) | (p & 0xffu) << 16 : p));
+            if (c->wallpaper && (!c->quest || !bottom_hud_covers(u, v, w, h))) p = c->wallpaper[v * w + u];
+            c->frame[v * w + u] = 0xff000000u | p;
         }
 }
 
+bool second_display_compose(uint32_t *frame, uint32_t w, uint32_t h, SecondDisplayState *st) {
+    bool had_hud = st->hud_seq != 0, changed;
+    Copy c = {frame, w, h, second_display_wallpaper(w, h, &changed), true};
+    if (changed) st->empty_shown = false;
+    if (bottom_hud_take(hud_copy, &c, &st->hud_seq)) {
+        if (!had_hud) SD_LOG("showing the game's bottom picture\n");
+        st->empty_shown = false;
+        return true;
+    }
+    // (nothing new from the game: the panel keeps its picture, until no panel piece has been drawn for a while)
+    if (st->empty_shown || (had_hud && !bottom_hud_stale())) return false;
+    uint32_t *empty = malloc((size_t)w * h * 4);
+    if (!empty) return false;
+    bottom_hud_empty_picture(empty, w, h, false);  // (out of a quest: the background alone)
+    c.quest = false;
+    hud_copy(empty, w, h, &c);
+    free(empty);
+    st->empty_shown = true;
+    return true;
+}
+
+void second_display_apply(void) { config_second_display_request(); }
+
+#ifdef MHGU_SECOND_DISPLAY
 // ---- Vulkan, all of it on this thread
 static bool have_instance_exts(const char *const *want, uint32_t n) {
     uint32_t c = 0;
@@ -367,30 +404,21 @@ static void image_barrier(VkImage img, VkAccessFlags src, VkAccessFlags dst, VkI
 
 // One picture onto the panel, or none: anything not ready at once skips this turn. False: the panel is gone.
 static bool present_once(void) {
-    static uint64_t hud_seq;  // (the game's last bottom picture shown, 0 none yet)
+    static SecondDisplayState st;
+    static uint32_t *frame;  // (the upright picture second_display_compose makes, turned into the panel's pixels below)
     VkResult r = vkGetFenceStatus(s.dev, s.done);
     if (r == VK_NOT_READY) return true;  // (the last copy is still running)
     if (r != VK_SUCCESS) { SD_LOG("fence: %d\n", r); return false; }
-    bool had_hud = hud_seq != 0;
-    static bool empty_shown;
     uint32_t w, h;
     upright_size(&w, &h);
-    bool changed;
-    wallpaper = second_display_wallpaper(w, h, &changed);
-    if (changed) empty_shown = false;  // (out of a quest the background is drawn again; in a quest the next picture has it)
-    if (bottom_hud_take(hud_copy, NULL, &hud_seq)) {
-        empty_shown = false;
-        if (!had_hud) SD_LOG("showing the game's bottom picture\n");
-    } else {
-        // (nothing new from the game: the panel keeps its picture, until no panel piece has been drawn for a while)
-        if (empty_shown || (had_hud && !bottom_hud_stale())) return true;
-        uint32_t *empty = malloc((size_t)w * h * 4);
-        if (!empty) return true;
-        bottom_hud_empty_picture(empty, w, h, false);  // (out of a quest: the background alone)
-        hud_copy(empty, w, h, empty);
-        free(empty);
-        empty_shown = true;
-    }
+    if (!frame && !(frame = malloc((size_t)w * h * 4))) return true;
+    if (!second_display_compose(frame, w, h, &st)) return true;  // (nothing new: the panel keeps its picture)
+    bool bgr = s.format == VK_FORMAT_B8G8R8A8_UNORM || s.format == VK_FORMAT_B8G8R8A8_SRGB;
+    for (uint32_t v = 0; v < h; v++)
+        for (uint32_t u = 0; u < w; u++) {
+            uint32_t p = frame[v * w + u];
+            put(u, v, 0xff000000u | (bgr ? (p & 0xff00u) | (p >> 16 & 0xffu) | (p & 0xffu) << 16 : p));
+        }
     uint32_t img;
     r = vkAcquireNextImageKHR(s.dev, s.swapchain, 0, s.acquired, VK_NULL_HANDLE, &img);
     if (r == VK_NOT_READY || r == VK_TIMEOUT) return true;
@@ -512,4 +540,5 @@ void second_display_init(bool enabled, uint32_t vendor, uint32_t device) {
     if (pthread_create(&th, &attr, panel_thread, NULL) != 0) SD_LOG("no thread: the game goes on, on its window only\n");
     pthread_attr_destroy(&attr);
 }
+#endif  // MHGU_SECOND_DISPLAY
 #endif

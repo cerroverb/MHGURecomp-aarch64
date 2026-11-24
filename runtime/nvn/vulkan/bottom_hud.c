@@ -1,3 +1,6 @@
+// From cerroverb's MHGURecomp-aarch64 fork (89c29ab, MIT like the rest of this repo), where a DRM lease puts it on a
+// dual-screen handheld's panel under Linux; here the panel is Android's (second_display_android.c).
+//
 // The second display's picture, made from the game's own HUD. The pieces of a few HUD groups (bottom_hud_group) are
 // drawn a second time, as the game drew them, into an image of the panel's size: the same pipelines, descriptor sets
 // and buffers, only the viewport and scissor move them to their place on the panel. They leave the top screen, as on
@@ -6,7 +9,8 @@
 // the GPU has finished. Nothing on the game's side waits: the extra draws and the copy go into the command buffer the
 // frame records anyway, and a slot the panel is reading is skipped.
 //   MHGU_BOTTOM_HUD_TEST=<w>x<h>   (test) make the bottom image without a panel, saved as shots/bottom_<n>.png every 2 s
-#ifdef MHGU_SECOND_DISPLAY
+#include "../../config.h"  // (MHGU_DUAL_SCREEN)
+#ifdef MHGU_DUAL_SCREEN
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -152,6 +156,7 @@ static int ndraws;
 void bottom_hud_record(const BottomDraw *d) {
     if (ndraws < MAX_DRAWS) draws[ndraws++] = *d;
 }
+void bottom_hud_discard(void) { ndraws = 0; }
 
 // ---- the bottom image: one image per attachment of the game's HUD pass (the pipelines need a pass of the same
 // formats), and an RGBA8 image the colour is converted into for the copy
@@ -166,6 +171,7 @@ void bottom_hud_set_size(uint32_t w, uint32_t h) {
     atomic_store(&want_h, h);
     atomic_store(&want_w, w);
 }
+void bottom_hud_size(uint32_t *w, uint32_t *h) { *w = atomic_load(&want_w), *h = atomic_load(&want_h); }
 
 static bool make_image(TexBackend *b, VkFormat f, VkImageAspectFlags aspect, VkImageUsageFlags usage) {
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = f,
@@ -499,16 +505,10 @@ bool bottom_hud_flush(VkCommandBuffer cb, VkRenderPass rp, const VkFormat *color
 }
 
 // ---- panel side
-static uint64_t completed_seq(void) {
-    if (g_vk.fences) return 0;  // (Vulkan 1.1 devices: no timeline to read without the game's fence lock)
-    uint64_t v = 0;
-    g_vk.get_semaphore_counter(g_vk.dev, g_vk.timeline, &v);
-    return v;
-}
-
 bool bottom_hud_take(void (*copy)(const uint32_t *rgba, uint32_t w, uint32_t h, void *ctx), void *ctx, uint64_t *seq) {
     if (!slot[SLOTS - 1].px) return false;
-    uint64_t done = completed_seq(), best_seq = 0;
+    // (the timeline's value, or on Vulkan 1.1 devices the per-submission fences' count: exec.c, under its own lock)
+    uint64_t done = vk_completed_seq(), best_seq = 0;
     int best = -1;
     for (int i = 0; i < SLOTS; i++) {
         uint64_t s = atomic_load(&slot[i].seq);

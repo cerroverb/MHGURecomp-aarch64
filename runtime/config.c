@@ -88,6 +88,7 @@
     /* [Performance] */                                                                             \
     .show_fps = 0,                                                                                  \
     .show_battery = BATTERY_OFF,                                                                    \
+    .show_temperature = TEMP_OFF,                                                                   \
     .fps = 60,                                                                                      \
     .vsync = 1,                                                                                     \
     .shader_prewarm = 1,                                                                            \
@@ -151,6 +152,10 @@
     .backups_on = 1,                                                                                \
     .save_backups = 10,                                                                             \
     .backup_location = "",                                                                          \
+    .second_display = 0,                                                                            \
+    .bottom_panels = BOTTOM_PANELS_DEFAULT,                                                         \
+    .bottom_background = BOTTOM_BG_DARK,                                                            \
+    .bottom_wallpaper = "",                                                                         \
 
 Config g_config = {CONFIG_DEFAULT_VALUES};
 Config config_defaults(void) { Config c = {CONFIG_DEFAULT_VALUES}; return c; }
@@ -204,7 +209,7 @@ static const char DEFAULT_INI[] =
     "; Default: On\n"
     "FXAA = On\n"
     "\n"
-    "; Which FXAA: Original is GU's own, 3_11 is FXAA 3.11, which keeps textures sharper\n"
+    "; Which FXAA method to use."
     "; Original, 3_11\n"
     "; Default: Original\n"
     "FXAAMode = Original\n"
@@ -244,14 +249,14 @@ static const char DEFAULT_INI[] =
     "; Default: 1.0\n"
     "DrawDistance = 1.0\n"
     "\n"
-    "; Anisotropic filtering: keeps textures seen at a slant (the ground, walls, roads) sharp into the distance.\n"
-    "; Off: as the game draws them\n"
+    "; Anisotropic filtering, improves texture sharpness.\n"
+    "; Off: vanilla\n"
     "; Off, 2x, 4x, 8x, 16x\n"
     "; Default: Off\n"
     "AnisotropicFiltering = Off\n"
     "\n"
     "; Renders the picture with 16 bits per colour instead of 8, so dark skies and soft glows show no colour bands.\n"
-    "; Costs GPU time: about 1 ms a frame at 1600x1000, more at higher resolutions\n"
+    "; Slightly impacts GPU performance.\n"
     "; Default: Off\n"
     "SmoothGradients = Off\n"
     "\n"
@@ -344,6 +349,12 @@ static const char DEFAULT_INI[] =
     "; Off, WithFPS, ByItself\n"
     "; Default: Off\n"
     "ShowBattery = Off\n"
+    "\n"
+    "; Android only: show the device's temperature (its battery's) under the frame rate, or in a box of its own when the\n"
+    "; frame rate is off\n"
+    "; Off, Celsius, Fahrenheit\n"
+    "; Default: Off\n"
+    "ShowTemperature = Off\n"
     "\n"
     "; Framerate cap\n"
     "; Between 30 and 240\n"
@@ -552,7 +563,7 @@ static const char DEFAULT_INI[] =
     "RoomServe = Off\n"
     "RoomServePort = 24872\n"
     "\n"
-    "; Crossplay with suyu, yuzu and the forks that kept their multiplayer rooms (Eden, Citron, ...). RoomServer: the\n"
+    "; Crossplay with suyu/yuzu/Eden emulators. RoomServer: the\n"
     "; room's address (host or host:port, default port 24872); this game joins it while local play is open, and the\n"
     "; emulators' hubs show up in Search Hubs. RoomHost = On: a hub you create lives in the room, so their players can\n"
     "; search and join it. RoomName: your name in the room. The same game version (1.4.0) is needed, and the port's extras\n"
@@ -621,17 +632,15 @@ static const char DEFAULT_INI[] =
     "MuteInBackground = Off\n"
     "\n"
     "; Speakers: Stereo, or 5.1 (front left / right, center, subwoofer, rear left / right) for a surround system.\n"
-    "; The game mixes its sound in 5.1 either way; Stereo folds it down to two channels.\n"
     "; Default: Stereo\n"
     "Output = Stereo\n"
     "\n"
-    "; Playback device, by its name as the settings menu lists it (\"Speakers (Realtek(R) Audio)\"...): always that\n"
-    "; device, no sound while it is unplugged. Empty or Default: the system's default device, followed when it changes.\n"
+    "; Which playback device to use for the audio.\n"
     "; Default: empty\n"
     "Device =\n"
     "\n"
     "[Application]\n"
-    "; Ask before the game window closes (closing does not save the game)\n"
+    "; Ask before the game window closes (closing does not automatically save the game)\n"
     "; Default: On\n"
     "ConfirmExit = On\n"
     "\n"
@@ -677,7 +686,7 @@ static const char DEFAULT_INI[] =
     "; Default: 10\n"
     "BackupsKept = 10\n"
     "\n"
-    "; PC only. The folder the save backups go in. Empty: a backups folder in the save folder, beside save_0.\n"
+    "; PC only. The folder the save backups go in. Empty means: a backups folder in the save folder, beside save_0.\n"
     "; Takes effect at the next start\n"
     "BackupLocation =\n"
     "\n"
@@ -694,28 +703,30 @@ static const char DEFAULT_INI[] =
 #ifdef MHGU_DUAL_SCREEN
     "\n"
     "[Dual Screen]\n"
-    "; MHXX's bottom screen on the second panel of a dual-screen handheld, through a lease from the compositor: the panels\n"
-    "; below show the game's own HUD parts there (and leave the top screen), and take touch\n"
+    "; Enable MHXX-style dual screen support for certain HUD elements and Hunter Arts, useful for the AYN Thor.\n"
+    "; Can be a bit finicky on PC setups.\n"
     "; Default: Off\n"
     "SecondDisplay = Off\n"
     "\n"
     "; The bottom screen's panels, as MHXX's Panel Customize places them on its 4 x 3 grid: name@column,row, columns 0..3\n"
     "; from the left, rows 0..2 from the top. A panel covers its size from there; a later panel replaces what it covers.\n"
     "; arts3v 2x3 (three Hunter Arts, stacked: touch one to use it), arts3h 4x1 (the same in a row), map 2x2 (the game's\n"
-    "; minimap: turn it on with Y in the pause menu), itembar 2x1 (touch the middle to use the item, the sides to change\n"
-    "; it), status 4x1 (clock, health, stamina, sharpness), palico 4x1, target 2x1 (touch to switch the target)\n"
+    "; minimap: touch to switch the zoomed and the whole map), itembar 2x1 (touch the middle to use the item, the sides\n"
+    "; to change it), status 4x1 (clock, health, stamina, sharpness), palico 4x1, target 2x1 (touch to switch the\n"
+    "; target), dpad 2x2 (touch to turn the camera)\n"
     "; Default: " BOTTOM_PANELS_DEFAULT "\n"
     "Panels = " BOTTOM_PANELS_DEFAULT "\n"
     "\n"
-    "; What the bottom screen shows under its panels, and alone out of a quest: Wallpaper (the picture below; without the\n"
-    "; file: Dark), Dark (MHXX's grey), Black (nothing: an OLED panel's pixels stay off)\n"
-    "; Default: Wallpaper\n"
-    "Background = Wallpaper\n"
+    "; What the bottom screen shows under its panels, and alone out of a quest: Dark (MHXX's grey), Black (an OLED\n"
+    "; screen's pixels stay off), Wallpaper (a picture of your own: below)\n"
+    "; Default: Dark\n"
+    "Background = Dark\n"
     "\n"
-    "; The wallpaper: a BMP in the wallpapers folder beside the program (add your own there), scaled to cover the panel.\n"
-    "; Empty: each wallpaper of the folder in turn, 30 seconds each\n"
-    "; Default: " BOTTOM_WALLPAPER_DEFAULT "\n"
-    "Wallpaper = " BOTTOM_WALLPAPER_DEFAULT "\n"
+    "; The wallpaper: a 24-bit BMP you put in the wallpapers folder (beside the game; Android: in the app's files), scaled\n"
+    "; to cover the screen.\n"
+    "; Empty: each BMP of the folder in turn, 30 seconds each\n"
+    "; Default: (empty)\n"
+    "Wallpaper =\n"
 #endif
     ;
 
@@ -830,6 +841,8 @@ static bool parse_aspect(const char *v, float *out) {
 #define ERR_BACKUPS "Backups to keep must be 1-100."
 #define ERR_BACKUP_FOLDER "Invalid backup folder (one line, no ';' or '#')."
 #define ERR_GAME_FOLDER "Invalid game files folder (one line, no ';' or '#')."
+#define ERR_PANELS "Invalid bottom screen panel list (one line, no ';' or '#')."
+#define ERR_WALLPAPER "Invalid wallpaper file name (one line, no ';' or '#')."
 #define ERR_HP "HP factors must be 0.05-20."
 #define ERR_VILLAGE "Invalid village HP or quest override count."
 #define ERR_MOUSE "Mouse sensitivity must be 0.1-10 and smoothing 0-0.9."
@@ -890,6 +903,7 @@ const ConfigSetting g_settings[] = {
     {"HDR", "HDRFormat", SET_CHOICE, F(hdr_format), 0, 0, 0, "Auto,HDR10|pq,scRGB|fp16", NULL, false, ERR_HDR},
     ON_OFF("Performance", "ShowFPS", show_fps, false),
     {"Performance", "ShowBattery", SET_CHOICE, F(show_battery), 0, 0, 0, "Off,WithFPS,ByItself", NULL, false, ERR_MISC},
+    {"Performance", "ShowTemperature", SET_CHOICE, F(show_temperature), 0, 0, 0, "Off,Celsius|C,Fahrenheit|F", NULL, false, ERR_MISC},
     {"Performance", "FPS|FrameRate", SET_INT, F(fps), 0, 30, 240, NULL, NULL, false, ERR_MISC},
     ON_OFF("Performance", "VSync", vsync, false),
     ON_OFF("Performance", "ShaderPrewarm", shader_prewarm, true),
@@ -919,6 +933,12 @@ const ConfigSetting g_settings[] = {
     {"Multiplayer", "Port", SET_INT, F(ldn_port), 0, 1, 65535, NULL, NULL, false, ERR_NET},
     {"Android", "SaveFolder", SET_TEXT, F(save_dir), sizeof g_config.save_dir, 0, 0, NULL, NULL, true, ERR_FOLDER},
     {"Android", "GameFolder", SET_TEXT, F(game_dir), sizeof g_config.game_dir, 0, 0, NULL, NULL, true, ERR_GAME_FOLDER},
+#ifdef MHGU_DUAL_SCREEN
+    ON_OFF("Dual Screen", "SecondDisplay", second_display, false),
+    {"Dual Screen", "Panels", SET_TEXT, F(bottom_panels), sizeof g_config.bottom_panels, 0, 0, NULL, NULL, false, ERR_PANELS},
+    {"Dual Screen", "Background", SET_CHOICE, F(bottom_background), 0, 0, 0, "Wallpaper,Dark,Black", NULL, false, ERR_MISC},
+    {"Dual Screen", "Wallpaper", SET_TEXT, F(bottom_wallpaper), sizeof g_config.bottom_wallpaper, 0, 0, NULL, NULL, false, ERR_WALLPAPER},
+#endif
     {"Multiplayer", "Join", SET_TEXT, F(ldn_join), sizeof g_config.ldn_join, 0, 0, NULL, NULL, false, ERR_NET},
     {"Multiplayer", "Server", SET_TEXT, F(ldn_server), sizeof g_config.ldn_server, 0, 0, NULL, NULL, false, ERR_SERVER},
     {"Multiplayer", "Key", SET_TEXT, F(ldn_key), sizeof g_config.ldn_key, 0, 0, NULL, NULL, false, ERR_SERVER},

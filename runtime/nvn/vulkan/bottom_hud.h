@@ -3,8 +3,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h>
+#include "../../config.h"  // (MHGU_DUAL_SCREEN)
 
-#ifdef MHGU_SECOND_DISPLAY
+#ifdef MHGU_DUAL_SCREEN
 // On while the bottom image is made: the panel is showing (second_display.c) or MHGU_BOTTOM_HUD_TEST is set. All the
 // frame path reads, so that with the feature off a draw costs one load and one branch not taken.
 extern volatile bool g_bottom_hud_on;
@@ -35,6 +36,9 @@ typedef struct {
                     // the game keeps out of sight (the zoomed minimap) stay out on the panel too
 } BottomDraw;
 void bottom_hud_record(const BottomDraw *d);
+// At the end of a pass while the bottom screen is off: the pass' recorded draws dropped (their buffers and descriptor
+// sets are that submission's own and must never be replayed in a later one).
+void bottom_hud_discard(void);
 
 // At the end of the game's pass (outside it): the recorded draws into the bottom image, through a pass of the same
 // attachment formats, then a copy into host memory for the panel. seq: the submission this command buffer goes out as.
@@ -52,6 +56,8 @@ bool bottom_hud_stale(void);
 // Panel thread: the bottom screen's background, with the panels empty on it when panels is set, into an RGBA picture of
 // w x h (upright), on the CPU.
 void bottom_hud_empty_picture(uint32_t *px, uint32_t w, uint32_t h, bool panels);
+// The panel's picture size (bottom_hud_set_size's), 0 before the first.
+void bottom_hud_size(uint32_t *w, uint32_t *h);
 // Test mode (MHGU_BOTTOM_HUD_TEST): on without a panel; false when the variable is not set.
 bool bottom_hud_test_init(void);
 // Panel thread: the newest finished picture newer than *seq, handed to copy (RGBA8, w x h, upright) while it is held.

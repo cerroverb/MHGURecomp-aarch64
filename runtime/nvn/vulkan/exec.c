@@ -28,7 +28,7 @@
 #include "hdr.h"
 #include "shaders.h"
 #include "vk.h"
-#ifdef MHGU_SECOND_DISPLAY
+#ifdef MHGU_DUAL_SCREEN
 #include "bottom_hud.h"
 #endif
 
@@ -98,9 +98,42 @@ static VkFence seq_fence_take(uint64_t seq) {
     return f;
 }
 
+// No status polls (g_vk.no_poll: Turnip on Android's KGSL, issue #444). There, before Mesa 26.3 (e984ef29; forks such
+// as PurpleVK 26.3.0-devel still lack it), a check with no timeout waits until the GPU has finished everything
+// submitted: vk_collect_dead's check after each submission made the CPU and GPU take turns (35 fps where 60 hold with
+// the fix). vkGetSemaphoreCounterValue and vkGetFenceStatus both do it, and so does vkWaitSemaphores (the emulated
+// timeline checks each pending point before it waits). So: a fence per submission, and fence_thread waits for them in
+// order (a wait with a timeout waits for that fence only) and moves fence_done along; vk_completed_seq only reads it.
+static pthread_cond_t fence_cond = PTHREAD_COND_INITIALIZER;  // (no_poll) a new submission for fence_thread
+static bool fence_thread_on;
+
+static void *fence_thread(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&fence_lock);
+    for (;;) {
+        while (fence_done >= fence_last) pthread_cond_wait(&fence_cond, &fence_lock);
+        uint64_t seq = fence_done + 1;
+        int i = (int)(seq % SEQ_FENCES);
+        VkFence f = seq_fence[i].fence;
+        seq_fence[i].waiters++;
+        pthread_mutex_unlock(&fence_lock);
+        // (exit in progress: never reach the driver; the 1 s timeout brings the check round again)
+        VkResult r = vk_exiting() ? VK_TIMEOUT : vkWaitForFences(g_vk.dev, 1, &f, VK_TRUE, 1000000000ull);
+        pthread_mutex_lock(&fence_lock);
+        seq_fence[i].waiters--;
+        if (r == VK_SUCCESS && fence_done < seq) fence_done = seq;
+        if ((r != VK_SUCCESS && r != VK_TIMEOUT) || vk_exiting()) {
+            if (!vk_exiting()) LOG("[vk] fence thread: vkWaitForFences %d (device lost?): stops\n", r);
+            pthread_mutex_unlock(&fence_lock);
+            return NULL;
+        }
+    }
+}
+
 static uint64_t fence_completed(void) {
     pthread_mutex_lock(&fence_lock);
-    while (fence_done < fence_last && vkGetFenceStatus(g_vk.dev, seq_fence[(fence_done + 1) % SEQ_FENCES].fence) == VK_SUCCESS)
+    while (!g_vk.no_poll && fence_done < fence_last &&
+           vkGetFenceStatus(g_vk.dev, seq_fence[(fence_done + 1) % SEQ_FENCES].fence) == VK_SUCCESS)
         fence_done++;
     uint64_t v = fence_done;
     pthread_mutex_unlock(&fence_lock);
@@ -241,6 +274,15 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal) {
     if (g_vk.fences) {
         pthread_mutex_lock(&fence_lock);
         fence_last = submit_seq + 1;
+        if (g_vk.no_poll) {
+            if (!fence_thread_on) {
+                pthread_t th;
+                fence_thread_on = pthread_create(&th, NULL, fence_thread, NULL) == 0;
+                if (fence_thread_on) pthread_detach(th);
+                else FATAL("[vk] the fence thread could not be started\n");
+            }
+            pthread_cond_signal(&fence_cond);
+        }
         pthread_mutex_unlock(&fence_lock);
     }
     pthread_mutex_lock(&seq_lock);
@@ -897,7 +939,7 @@ static VkFormat pass_color[8], pass_depth;
 static bool pass_d24_as_float;  // the depth attachment is a DEPTH24_STENCIL8 made as D32S8 (polygon offsets in D24 steps)
 static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
 static bool ui_relax_scissor;  // the draw being set up moved a HUD piece out from under the game's scissor
-#ifdef MHGU_SECOND_DISPLAY
+#ifdef MHGU_DUAL_SCREEN
 static int ui_bottom = -1;  // the draw being set up is a HUD piece of this bottom group (bottom_hud.c), -1 none
 static float ui_bottom_m[16];  // its model matrix (the piece's outline from its vertices: bottom_piece_outline)
 #endif
@@ -992,15 +1034,21 @@ static void ui_group_hend(int n) {
     float x0 = ui_group.xmin, x1 = ui_group.xmax, cut = INFINITY, asp = g_render_aspect;
     int h = ui_group_hside(x0, x1), h2 = h;
     // Across the middle, not centred, with nothing of it over a quarter of the canvas: two things side by side on one
-    // row (the smithy's title at the top left and its page counter at the top right), each placed by its own side
-    if (h != 2 && x0 < 640.0f && x1 > 640.0f) {
+    // row (the smithy's title at the top left and its page counter at the top right), each placed by its own side.
+    // Centred too when the empty quarter is the middle and each side is a window of its own (wider than 160): Set
+    // Decorations' details window (x 26..402) and Equipment Box (870..1254) mirror about x 640 and went Centre as one
+    // dialog, but on an empty slot the box is drawn alone and went Right: it jumped sideways with Edges / 21:9. (A
+    // frame drawn as its corners only has nothing between its sides either, but no width on each side.)
+    if (x0 < 640.0f && x1 > 640.0f) {
         static float xs[UI_GROUP_MAX];
         for (int i = 0; i < n; i++) xs[i] = ui_group.p[i].pos_x;
         qsort(xs, (size_t)n, sizeof xs[0], ui_float_cmp);
         int k = 0;
         for (int i = 1; i < n; i++)
             if (xs[i] - xs[i - 1] > (k ? xs[k] - xs[k - 1] : 0.0f)) k = i;
-        if (k && xs[k] - xs[k - 1] > 320.0f) cut = xs[k], h = ui_group_hside(x0, xs[k - 1]), h2 = ui_group_hside(xs[k], x1);
+        bool apart = k && xs[k] - xs[k - 1] > 320.0f;
+        if (h == 2) apart = apart && xs[k - 1] < 640.0f && xs[k] > 640.0f && xs[k - 1] - x0 > 160.0f && x1 - xs[k] > 160.0f;
+        if (apart) cut = xs[k], h = ui_group_hside(x0, xs[k - 1]), h2 = ui_group_hside(xs[k], x1);
     }
     float s = (16.0f / 9.0f) / asp, anchor = g_ui_anchor_aspect < asp ? g_ui_anchor_aspect : asp;
     float left = 640.0f * (1.0f - anchor / asp);
@@ -1412,8 +1460,9 @@ void vk_end_pass(void) {
     if (ui_nrecent != ui_pass_recent) ui_results_last = ui_results_pass;
     vkCmdEndRenderPass(vk_cmd());
     in_pass = false;
-#ifdef MHGU_SECOND_DISPLAY
-    if (g_bottom_hud_on && bottom_hud_flush(vk_cmd(), pass_rp, pass_color, pass_ncolor, pass_depth, pass_samples, submit_seq + 1))
+#ifdef MHGU_DUAL_SCREEN
+    if (!g_bottom_hud_on) bottom_hud_discard();  // (turned off during the pass: its draws are never replayed later)
+    else if (bottom_hud_flush(vk_cmd(), pass_rp, pass_color, pass_ncolor, pass_depth, pass_samples, submit_seq + 1))
         ss_forget();  // (the bottom pass bound pipelines and buffers of its own)
 #endif
     if (gp_active) {
@@ -2943,7 +2992,7 @@ typedef struct {
     uint8_t sample_shading;  // (MSAA) every sample shaded (exec.c pass_models)
 } PipeKey;
 
-#ifdef MHGU_SECOND_DISPLAY
+#ifdef MHGU_DUAL_SCREEN
 // A bottom piece's outline on the 1280x720 canvas: its vertices (attribute 0, the position: 2 or more 32-bit floats)
 // through its model matrix, the first 64 at most. All zero when the position isn't a float pair or more.
 static void bottom_piece_outline(const PipeKey *k, uint32_t from, uint32_t to, float out[4]) {
@@ -2967,7 +3016,6 @@ static void bottom_piece_outline(const PipeKey *k, uint32_t from, uint32_t to, f
     out[0] = x0, out[1] = y0, out[2] = x1, out[3] = y1;
 }
 #endif
-
 
 typedef struct Pipe {
     PipeKey k;
@@ -3499,14 +3547,15 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if (stage == 0 && k == 3) ui_relax_scissor = false, ui_scissor_v = -1;
     // (a pass the size of the game's picture, in the guest's units: FSR's stand-ins and scaled targets are larger)
     bool screen_pass = stage == 0 && k == 3 && roundf((float)pass_h / pass_sy) == (float)g_render_size[1];
-#ifdef MHGU_SECOND_DISPLAY
+#ifdef MHGU_DUAL_SCREEN
     // (by the place the game gave it, before the 16:10 / ultrawide rules below move it)
+    if (stage == 0 && k == 3) ui_bottom = -1;
     if (g_bottom_hud_on && screen_pass && !st.ds[0] && size >= 64) {
         float m[16];
         memcpy(m, G2H((uint32_t)r.addr), 64);
         ui_bottom = bottom_hud_group(m[14], m[12], m[13]);
         memcpy(ui_bottom_m, m, sizeof ui_bottom_m);
-        // (drawn on the bottom panel only: as the game placed it, without the top screen's 16:10 / ultrawide moves)
+        // (drawn on the bottom panel only: as the game placed it, without the main screen's 16:10 / ultrawide moves)
         if (ui_bottom >= 0) return ubo_span(guest_copy(r.addr, size), size);
     }
 #endif
@@ -3567,6 +3616,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 float new_pos_x = pos_x, new_pos_y = pos_y;
                 bool grouped = false;
                 int vgroup = 1;
+                float zgroup = pos_z;  // (the layer its group is on: a menu window's text, 94, joins the window's 97)
 
                 if (is_3d_overlay && g_hudtrace_active)
                     LOG("[hud] z %.1f pos %.1f,%.1f m %.2f %.2f %.2f %.2f: 3D overlay, not moved\n", pos_z, pos_x, pos_y, m[0], m[1], m[4], m[5]);
@@ -3574,6 +3624,13 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                     enum { ANCHOR_LEFT, ANCHOR_RIGHT, ANCHOR_CENTER } anchor = ANCHOR_CENTER;
                     // vertically one anchor per layer (or per part of one), so a window drawn in pieces stays together
                     enum { V_TOP, V_BOTTOM, V_CENTER } vanchor = V_CENTER;
+                    // Text of layer 94 drawn on a layer 97 window right after its pieces, inside them: the Hub Info's
+                    // Canteen panel (frame x 508..942, y 300..470; its skill rows at x 598 / 610, y 350..431). By the
+                    // banners' rule it went Centre, ~40 px below its Top-anchored frame at 16:10 (out of the box), and
+                    // stayed in the middle wider than 16:9 while the frame went to its side. It is part of the window:
+                    // the menus' rule and group.
+                    bool menu_text = pos_z < 95.0f && ui_group.n && fabsf(ui_group.z - 97.0f) < 0.5f && pos_x >= ui_group.xmin &&
+                                     pos_x <= ui_group.xmax && pos_y >= ui_group.ymin && pos_y <= ui_group.ymax;
 
                     // Title screen: its layout (layer 108) is placed at the canvas centre and carries the copyright line at
                     // its bottom (y ~698), which the centre anchor moved up into "PRESS A" (layer 100, y 653 / 671, bottom
@@ -3588,7 +3645,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         // "Summary" header landed on the text. All of it scales about the center instead.
                         anchor = ANCHOR_CENTER;
                         vanchor = V_CENTER;
-                    } else if (pos_z < 95.0f) {
+                    } else if (pos_z < 95.0f && !menu_text) {
                         // 94.0: Central notifications & banners ("Time limit: 50 min.")
                         // 60.0: the Guild Card's name plate (top right, under its page counter): by which third it is in
                         anchor = ANCHOR_CENTER;
@@ -3598,7 +3655,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         // left and right)
                         anchor = pos_x >= 650.0f ? ANCHOR_RIGHT : ANCHOR_LEFT;
                         vanchor = pos_y < 360.0f ? V_TOP : V_BOTTOM;
-                    } else if (fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f) {
+                    } else if (fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f || menu_text) {
                         // 97.0: Menus and Submenus
                         // 98.0: text drawn over them (the Qty. label of the quantity box): it used the generic rule, which
                         // centered it 36 px below its top-anchored box
@@ -3724,11 +3781,12 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                     // right): the item box's Manage Equipment submenu (x 333..563) lost its body and right corners to the
                     // right, its Rotate / Camera prompts (100, x 18..98, under the menu) and the Multiplayer dialog (over
                     // the middle) went right. Not on the screens placed whole above, nor the bars that belong to an edge.
-                    if (s < 1.0f && (fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f || fabsf(pos_z - 100.0f) < 0.5f) &&
+                    if (s < 1.0f && (fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f || fabsf(pos_z - 100.0f) < 0.5f || menu_text) &&
                         !ui_frontend_pass && !ui_title_pass && !ui_loading_pass && !ui_stamp_pass && !ui_results_pass &&
                         !ui_results_last && !ui_meownster_pass && pos_y >= 10.0f && pos_y <= 712.0f)
                         grouped = true;
                     vgroup = v;
+                    if (menu_text) zgroup = 97.0f;
                     if (g_hudtrace_active)
                         LOG("[hud] z %.1f pos %.1f,%.1f m %.2f %.2f %.2f %.2f -> %c%c %.1f,%.1f%s sc %d,%d %dx%d\n", pos_z, pos_x, pos_y, m[0], m[1], m[4],
                             m[5], "LRC"[anchor], "TBC"[vanchor], new_pos_x, new_pos_y, ui_menu_pass ? " menu" : "", st.scissor[0][0],
@@ -3742,7 +3800,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 
                 VkSpan sp = vk_transient_copy(G2H((uint32_t)r.addr), size, 256);  // (all of it, the matrix changed)
                 memcpy(sp.ptr, m, 64);
-                if (grouped) ui_group_add((float *)sp.ptr, pos_z, pos_x, pos_y, vgroup);
+                if (grouped) ui_group_add((float *)sp.ptr, zgroup, pos_x, pos_y, vgroup);
                 {   // (where the piece ends up: read at the frame's end, once its group has its anchor - runtime/menulearn.c)
                     void menulearn_piece_final(const float *m);
                     menulearn_piece_final((const float *)sp.ptr);
@@ -4573,7 +4631,7 @@ static void draw(CmdRec *r, bool indexed) {
         }
     }
     if (mf_tex) models_fxaa_note();
-#ifdef MHGU_SECOND_DISPLAY
+#ifdef MHGU_DUAL_SCREEN
     if (ui_bottom >= 0 && !k.stencil_test) {
         BottomDraw bd = {.group = ui_bottom, .pipe = pp->pipe, .layout = pr->layout, .sets = {sets[0], sets[1]},
                          .indexed = use_index, .ib = ib.buf, .io = ib.off, .it = itype_vk, .count = use_index ? icount : count,
