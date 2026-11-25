@@ -278,10 +278,6 @@ bool plat_use_folder(const char *utf8, char *buf, size_t size) {
     return stat(buf, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-const char *plat_utf8_path(const char *path, char *buf, size_t size) {
-    snprintf(buf, size, "%s", path);
-    return buf;
-}
 
 bool plat_plain_entry(const char *path, bool dir) {
     struct stat st;

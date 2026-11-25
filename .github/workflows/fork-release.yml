@@ -30,7 +30,7 @@ concurrency:
 
 env:
   UPSTREAM: morerokk/MHGURecomp
-  BRANCH: aarch64-linux-v2
+  BRANCH: repair-test
 
 jobs:
   check:
