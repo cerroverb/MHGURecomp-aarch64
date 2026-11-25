@@ -154,7 +154,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > "$RUNNER_TEMP/build.sh" <<'EOF'
-          gh release download "$UP" -R "$UPSTREAM" -p 'Linux-MHGURecomp.*.tar.gz' -O "$RUNNER_TEMP/upstream.tar.gz"
+          gh release download "$UP" -R "$UPSTREAM" -p 'Linux-MHGURecomp.*.tar.gz' -O "$RUNNER_TEMP/upstream.tar.gz" --clobber  # (build.sh runs again after a repair)
           mkdir -p "$RUNNER_TEMP/bonus" && tar -xzf "$RUNNER_TEMP/upstream.tar.gz" -C "$RUNNER_TEMP/bonus" --strip-components=2 Linux-MHGURecomp/bonus/system
           make -j"$(nproc)" B=build-a64 O=obj-a64 GAME="$RUNNER_TEMP/assets" VERSION="$UP.$REVISION" SDL3_NEED= DUAL_SCREEN=1 \
             FFMPEG_CONF="$(cat "$RUNNER_TEMP/assets/arm/ffmpeg-conf.txt")" DIST="$RUNNER_TEMP/dist" \
