@@ -472,7 +472,7 @@ script module (vm +0x8d0) is not loaded during a hunt, when the script always sa
 screen, where 0x588d40 runs. 0x74af8c also goes by a table of quest variants (0x182cde4, bits at +0x35d4): Sky Render
 11401 and 1005 read locked after their clear, when their replay versions take their place. In the quest files mFlag is the file's last u16 (the language references before it have variable length): bit 0
 is on 28 quests: 206, 303, 402, 501, 601, 620, 713, 806, 906, 1005, 1017, 1018, 1019, 1026, 1039, 10216, 10307, 10335,
-10531, 10606, 10608, 10710, 10722, 10768, 11204, 11319, 11401, 11432. Special Permit quests stay the poster's. Other
+10531, 10606, 10608, 10710, 10722, 10768, 11204, 11319, 11401, 11432. Special Permit quests stay the poster's (since 2026-11-26 unless ShareDeviantCredit, below). Other
 things only the poster gets, unchanged: the contract fee back (0x5c7274) and the cutscene-seen flags (0x34e4d8,
 0x34fb60). Each game decides for its own save: nothing is sent, and the host's setting doesn't matter.
 
@@ -487,6 +487,21 @@ counter. An insta-clear cheat (sQuest +0xec = 0x29) on the host ended the quest 
 quest 0010216 cleared, posted by someone else: it counts here too"; back in the Hub "Hunter Rank 2 unlocked!", the 2-star
 quests unlocked, and new NPC dialogue. Not checked yet: a joiner who hasn't unlocked the Urgent, in a real hub (only
 through the harness above; the board may refuse them first).
+
+Deviant quests (2026-11-26): ini [Multiplayer] ShareDeviantCredit = On (default, applies at Save) does the same for
+Special Permit quests (numbers 4MMLL, deviant MM 1-18, level LL 1-16; 13-18 start at 11), in the same file: 0x5ae768
+(sQuest +0xb8 bit 19) says no when 0x74af8c says the quest is unlocked. Only its call from 0x588d40 (return address
+0x588dc0) is changed: 0x373110 asks it in a hunt to pick a damage multiplier from a table (0x1824bc0, 4 rows x 3
+columns: column 0 when 0x5a8d68, quest data +0xf, is below 2, else 1, or 2 for Special Permit; values 0.5 down to 0;
+only for attacks with +0x6d = 2, probably a monster's; the hunter count plays no part). A level's clear
+flag is what unlocks the next one (0x74af8c read 40102 locked before 40101's bit was set and unlocked after, on the
+result screen). ShareUrgentCredit never covered Deviant quests: none has the Urgent bit, and with it On and
+ShareDeviantCredit Off a joiner's clear didn't count. Tested (2026-11-26) with a temporary harness, not committed: a copy of
+testsave/save_0 (every Lv1 unlocked, nothing cleared), Hub offline via the World Map, control-file "depart 40101", the
+instant-clear cheat; at 0x588d40 the quest's bit cleared first and 0x5ae3b4 made to answer "not the poster" for that
+call. As the poster: 40101 set, 40102 unlocked. Not the poster, On: "[deviant] quest 0040101 cleared, posted by someone
+else: it counts here too", set, 40102 unlocked. Off: not set. 40102 (locked), On: "not unlocked in this save", not set.
+Rig: C:\MHGURecompile\scratch-deviant (hunt.sh; the harness code isn't kept). Not checked yet: two real players.
 
 ## Quest 713 "Research Team's First Rodeo": black screen after the clear (2026-11-07, not a port bug)
 
@@ -828,6 +843,8 @@ Buff icons and the frame rate (2026-10-28): fixed. Reported: with two or more bu
 Camera stuck after a cut-in at high frame rates (2026-11-15): fixed, not yet confirmed by the reporter. Reported (also on emulators, only at high frame rates): a ledge breaking in the Ancestral Steppe's area 7 takes the camera for a cut-in, which then stays looking down at the area for the rest of the hunt. The Steppe is stage 11 (m11d; stage 22 is the Desert, 5 the old Desert): its breakable ledges (uKowareModel, listed by the gimmick manager *0x1a977a0 at +0x21c, count +0x27c; area +0x182, id +0x188 = the area's sub-area, type +0x189, state +0x184, machine 0x713260) are 2:1-4, 3:1, 4:1-2, 7:1 (type 6, 200 damage) and 9:1. They collapse from hits (+0xd0 adds to +0x180 against +0x17e, 0x715a54) or a command (0x714f9c; cmd 0x18 breaks an id 1 ledge at once). A monster in the ledge's area and sub-area is told to fall with it (0x2a5900, status +0x91b); a hunter there falls (0x13e51bc), and the cut-in comes from the common script's camera helper 0x5d6df0 (state s16 at r1: 0, 10 showing, 100 done): every update the script says "show" it pushes its view on the stage camera's stack (camera +0x490, push 0x2162a8, pop 0x21635c, count +0x39c; the quest camera only drives itself with the stack empty), and it pops once at the end. It never checks that its view is already up: at 30 fps the script says "show" for one update (1 push, 1 pop), at 240 fps for 4 (4 pushes, 1 pop), and the 3 views left hold the camera on the cut-in's view for good. Fix (runtime/hle/stageview.c, tools/gen.py PATCHES 0x5d6e74): in state 10 the push is skipped. Checked (quest 924 started in area 7, the hunter dropped into sub-area 1 at -437, 100, ledge 7:1 broken with cmd 0x18): 240 fps before, 4 pushes / 1 pop and the camera stuck looking down at the area (as in the report); after, 1 push / 1 pop and the camera back behind the hunter 1.5 s later; 30 fps, 1 / 1 before and after. MHGU_NO_STAGEVIEW=1: the original. Not tested: the other users of 0x5d6df0 (common script cameras: village NPC cameras, the other ledges), a real monster ramming the ledge, Hub / multiplayer. Ruled out on the way (all step-based): monster cut-ins (vfunc +0x1c0 / +0x1c4 0x26f87c, sequencer 0x26f3a4 with +0xb621 / +0xb622, slot 1 type 5), the motion camera slots (+0x230 / +0x2f0, play 0x21d4a0, stop 0x21d728), the hunter-driven modes +0xa98 / +0xacc / +0x470. Debug aid: MHGU_CAMTRACE=1 (runtime/hle/camtrace.c) logs every camera play / stop, stage view push / pop, mode change and ledge state with its caller; for tests MHGU_START_AREA=<n> (now in quickhunt.c: the hunt's random start area, town +0xc9 at 0x8bdfd0), MHGU_CAMTRACE_HUNTER_AT=<x>:<z>:<s>, MHGU_CAMTRACE_LEDGE=<area>:<id>:<cmd>:<s>, MHGU_CAMTRACE_SCAN=<s> (sub-areas on a grid), MHGU_CAMTRACE_MONTAGE=<s> (a monster cut-in).
 
 Oversized decorations crash the equipment view (2026-11-10): fixed, not tested in game. Reported from emulators: a hunter whose armor is modded for more slots slots a decoration bigger than the unmodded piece allows (a 3-slot decoration in a 2-slot piece); other hunters crash when they view that hunter's equipment in the UI (confirmed by the user on emulators; the console runs the same code). Cause, in the game's code: 0x2db66c gives a piece's free slots, its slot count (from your own unmodded data) minus each decoration's size (`subne r8, r1, r0` at 0x2db770), returned as a u8, so 2 - 3 = 255. The slot icons (0x750570) keep the piece's three slot widgets in an array on the stack (sp+0x10) and draw `free` empty slots after the decorations (loop 0x750680): 255 reads past the array, each word handed to the UI calls (0x76e6a8 / 0x76e6fc) as a widget. Nothing checks another hunter's decorations on arrival. Fix (tools/gen.py PATCHES): the free count is clamped at 0 at 0x2db778 (`ldrh r1, [r4, #0xa]`, which every subtraction reaches), so all of 0x2db66c's callers (0x750570, 0x780a60's slot widget, 0x5c1be0...) see 0. Such a piece then shows its decorations' icons without an empty slot; skills are unaffected (0x2ddd48 reads all three decoration ids without the slot count). Also covers your own save after a slot mod is removed. To test: two instances, one save with a 3-slot decoration in a 2-slot piece (decoration ids at the piece's entry +6/+8/+0xa), view that hunter's equipment from the other.
+
+Unknown weapon types show a red X (2026-11-26, runtime/hle/equipcheck.c): a hunter with a mod's new weapon type (Magnet Spike, class 5) played as a Great Sword user on games without the mod, and their weapon icon was empty in Search Hubs and a Great Sword in the Hub's player list, so a hub host couldn't tell. Weapon icons come from 0x760918 (kind 4 = weapon type, value = class -> rect in eng\GUI\99_texture\HD_cmn_icon_GSM_NOMIP, x0 y0 x1 y1 floats); a class without a hunter in this game now gets that sheet's X, tinted red (0x74700c, after 0x76e6a8 puts the icon on). Join Hub list and hub details read the class raw from the advertise data (+0x64; +0x68 HR, +0x70 host name); the Hub's player list (cUIOPlayerInfoPanel, 0x80dfb8) reads the hunter's record, which equipcheck_swap rewrites to the Great Sword (on the host the game refills it from the network a moment later, on a joiner seeing a modded host never), so equipcheck remembers the real class for those records (gen.py PATCHES). The mod's own players keep its icon. Tested with two instances (Magnet Spike v0.1.0-beta.5 save in run3\magnet, backup run3\magnet_save_equipped): modded hunter joining a vanilla host, and hosting while a vanilla hunter searches and joins. Not changed: other kind-4 icon places that read the record (e.g. 0x834274, 0x8a4da8) still show the Great Sword.
 
 KO (stun) and the frame rate (2026-10-29): not found yet. Reported: KO from head hits with blunt weapons much harder at
 high frame rates (a 240 fps player: Alatreon hammer solo, horns broken early, 0-1 KOs). Suspected status decay counted
@@ -1708,6 +1725,25 @@ refuses RWX memory keeps the interpreter (jit_tls, logged).
   MHGU_VK_BIAS_SYNC=1 / 0 turns it on / off on any driver. Cost on the Deck (paused in area 6, gpuprof): GPU busy
   5.34 -> 5.92 ms a frame, 60 fps unchanged. Off on the R9 (AMD's Windows driver). Checked on the Deck: rock broken,
   small monsters around, the pause screen: no flicker.
+
+## Switch 2 controllers on Windows: SDL3 built with libusb (2026-11-26)
+
+- Reported (0.18.3, Windows 11): a Switch 2 Pro Controller (057e:2069) over USB never shows up, no `[input] gamepad`
+  line. SDL's Switch 2 driver (SDL_hidapi_switch2.c) must send an init sequence over the bulk endpoints of USB
+  interface 1 before the controller reports anything, and does that through libusb; the Switch 2 controllers are on
+  SDL's libusb list (SDL_hidapi.c SDL_libusb_required), so without libusb they're skipped altogether. MSYS2's SDL3.dll
+  is built without it (no `SDL_HIDAPI_LIBUSB` string in it). Steam Input was the workaround.
+- The Windows build now makes SDL 3.4.18 from third_party/ like Linux and Android, as SDL3.dll (cmake, SDL3_CONF), with
+  libusb loaded at run time (SDL_LIBUSB_DYNAMIC "libusb-1.0.dll"); SDL3_NEED checks HIDAPI_LIBUSB(_SHARED) on both
+  desktops. bundle_dlls.py takes our SDL3.dll (--own) and MSYS2's libusb-1.0.dll (--load: not in any import table),
+  LGPL-2.1, in licenses/README.txt's written offer. libiconv-2.dll is gone (only MSYS2's SDL3 imported it). New build
+  needs: mingw-w64-ucrt-x86_64-cmake and -libusb; `SDL3=system` links MSYS2's SDL3.dll as before.
+- The Linux release already had libusb (Arch's libusb found by SDL's configure); it needs read/write access to the
+  device under /dev/bus/usb (udev rules such as Steam's).
+- Only devices on that libusb list are opened through libusb (the whitelist is on by default where a platform HID
+  backend exists); every other controller goes through SDL's usual Windows paths. Bluetooth Switch 2 is still a stub in
+  SDL 3.4.18. Checked: the game starts and loads libusb-1.0.dll and the new SDL3.dll; no Switch 2 controller here, so
+  the controller itself is untested.
 
 ## Next steps
 1. Modding tools: decode resident.arc tables (weapon00..14 Base/Level data: record layouts derivable from the game

@@ -29,9 +29,9 @@
 volatile bool g_bottom_hud_on;
 extern volatile int g_hudtrace_active;  // (exec.c)
 
-// ---- the MHXX bottom screen: its 320x240 picture, centred on the panel at the largest whole fit, with MHXX's panel
-// base: a grid of 4 x 3 cells under the top bar (cell edges measured on MHXX's quest screen, test/mhxx-reference,
-// Azahar 2126.2). [Dual Screen] Panels places panels on it, as MHXX's Panel Customize does.
+// ---- the MHXX bottom screen: its 320x240 picture, its panel grid centred on the panel at the largest fit (screen_fit:
+// its shape kept; the background, colour or wallpaper, fills the rest), with MHXX's panel base: a grid of 4 x 3
+// cells under the top bar (cell edges measured on MHXX's quest screen, test/mhxx-reference, Azahar 2126.2). [Dual Screen] Panels places panels on it, as MHXX's Panel Customize does.
 static const int16_t cell_x[5] = {2, 81, 161, 240, 319}, cell_y[4] = {26, 97, 168, 237};
 
 // A part of the game's 1280x720 HUD canvas: its pieces, by layer and place (hudtrace in a quest, 2026-11-20).
@@ -112,10 +112,16 @@ static void box_rect(int p, int i, float r[4]) {
     if (panel_boxes(p) == 1) r[2] = cell_x[placed[p].col + k->cols], r[3] = cell_y[placed[p].row + k->rows];
 }
 
-// The 3DS picture on the panel: scale and top left, from the upright size.
+// The 3DS picture on the panel: scale and top left (of the whole 320x240), from the upright size. What is fitted is the
+// panel grid with a 2-pixel border all round it (x 0..320, y 24..238: the boxes as drawn are 2..318 x 26..236), not the
+// whole 3DS screen, whose empty top bar would only be a strip of background above the grid: the grid takes the panel's
+// full width or height, its shape kept, and the background fills the rest on the other two sides.
+#define FIT_Y0 24.0f
+#define FIT_W 320.0f
+#define FIT_H 214.0f
 static void screen_fit(uint32_t w, uint32_t h, float *scale, float *x0, float *y0) {
-    float s = (float)w / 320.0f < (float)h / 240.0f ? (float)w / 320.0f : (float)h / 240.0f;
-    *scale = s, *x0 = ((float)w - 320.0f * s) * 0.5f, *y0 = ((float)h - 240.0f * s) * 0.5f;
+    float s = (float)w / FIT_W < (float)h / FIT_H ? (float)w / FIT_W : (float)h / FIT_H;
+    *scale = s, *x0 = ((float)w - FIT_W * s) * 0.5f, *y0 = ((float)h - FIT_H * s) * 0.5f - FIT_Y0 * s;
 }
 
 // In a quest: the quest clock (layer 103, its pieces at the top left) was drawn this frame or the last. The panels
@@ -310,7 +316,8 @@ static void fill(VkCommandBuffer cb, float x0, float y0, float x1, float y1, Col
 static void draw_panels(VkCommandBuffer cb) {
     float s, ox, oy;
     screen_fit(img_w, img_h, &s, &ox, &oy);
-    fill_alpha(cb, ox, oy, ox + 320.0f * s, oy + 240.0f * s, background(), background_alpha());
+    // (the whole panel, not only the 3DS picture: a bottom screen that isn't 4:3 had black bars round it)
+    fill_alpha(cb, 0, 0, (float)img_w, (float)img_h, background(), background_alpha());
     for (int p = 0; p < nplaced; p++) {
         const Kind *k = &kinds[placed[p].kind];
         float r[4], x0 = 0, y0 = 0, x1 = 0, y1 = 0;
@@ -368,8 +375,7 @@ void bottom_hud_empty_picture(uint32_t *px, uint32_t w, uint32_t h, bool panels)
     float s, ox, oy;
     screen_fit(w, h, &s, &ox, &oy);
     uint32_t a = background_alpha() > 0 ? 0xff : 0;
-    cpu_fill_alpha(px, w, h, 0, 0, (float)w, (float)h, (Colour){0, 0, 0}, a);
-    cpu_fill_alpha(px, w, h, ox, oy, ox + 320.0f * s, oy + 240.0f * s, background(), a);
+    cpu_fill_alpha(px, w, h, 0, 0, (float)w, (float)h, background(), a);  // (the whole panel, as draw_panels)
     if (!panels) return;  // (out of a quest: the background alone, so it shows the bottom screen is on)
     for (int p = 0; p < nplaced; p++) {
         const Kind *k = &kinds[placed[p].kind];
