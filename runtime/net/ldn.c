@@ -25,6 +25,7 @@
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -344,10 +345,39 @@ static bool spawn(void *(*fn)(void *), void *arg) {
 }
 
 // ---- frames
+// Why this thread's last send_all / recv_all / frame_recv failed, for the log: "no answer" alone can't tell a server
+// that hung up at once (its per-address connection cap, or something between that resets the connection) from a reply
+// that never came (packets lost).
+static __thread char io_fail[64];
+static __thread bool io_hung_up;  // ...and it was the other end closing the connection
+static void io_failed(bool sending, int k) {
+    io_hung_up = k == 0;
+    if (k == 0) {
+        snprintf(io_fail, sizeof io_fail, "the other end hung up");
+        return;
+    }
+#ifdef _WIN32
+    int e = WSAGetLastError();
+    bool timeout = e == WSAETIMEDOUT, reset = e == WSAECONNRESET || e == WSAECONNABORTED;
+#else
+    int e = errno;
+    bool timeout = e == EAGAIN || e == EWOULDBLOCK, reset = e == ECONNRESET || e == EPIPE;
+#endif
+    snprintf(io_fail, sizeof io_fail, "%s%s (error %d)", sending ? "sending: " : "",
+             timeout ? "nothing came in time" : reset ? "connection reset" : "socket error", e);
+}
+// What a request's failed answer was (n, type: frame_recv's), with the time it took
+static const char *reply_why(int n, uint8_t type, uint64_t asked_ns) {
+    static __thread char why[112];
+    int ms = (int)((plat_now_ns() - asked_ns) / 1000000);
+    if (n < 0) snprintf(why, sizeof why, "%s, after %d ms", io_fail[0] ? io_fail : "failed", ms);
+    else snprintf(why, sizeof why, "an unexpected reply (type %u, %d bytes), after %d ms", type, n, ms);
+    return why;
+}
 static bool send_all(hsock s, const void *b, size_t n) {
     for (const char *p = b; n;) {
         int k = send(s, p, (int)n, 0);
-        if (k <= 0) return false;
+        if (k <= 0) return io_failed(true, k), false;
         p += k, n -= (size_t)k;
     }
     return true;
@@ -355,7 +385,7 @@ static bool send_all(hsock s, const void *b, size_t n) {
 static bool recv_all(hsock s, void *b, size_t n) {
     for (char *p = b; n;) {
         int k = recv(s, p, (int)n, 0);
-        if (k <= 0) return false;
+        if (k <= 0) return io_failed(false, k), false;
         p += k, n -= (size_t)k;
     }
     return true;
@@ -376,7 +406,13 @@ static bool link_send(Link *l, uint8_t type, const void *a, uint32_t alen, const
 // -1: closed / error; else the payload size (buf holds MAX_FRAME bytes)
 static int frame_recv(hsock s, uint8_t *type, uint8_t *buf) {
     uint32_t size;
-    if (!recv_all(s, &size, 4) || size < 1 || size > MAX_FRAME + 1 || !recv_all(s, type, 1)) return -1;
+    if (!recv_all(s, &size, 4)) return -1;
+    if (size < 1 || size > MAX_FRAME + 1) {
+        io_hung_up = false;
+        snprintf(io_fail, sizeof io_fail, "a bad frame (size %u)", size);
+        return -1;
+    }
+    if (!recv_all(s, type, 1)) return -1;
     return recv_all(s, buf, size - 1) ? (int)size - 1 : -1;
 }
 static void link_close(Link *l) {  // (caller: not holding L.mu if l has a thread to join)
@@ -627,6 +663,22 @@ static void pkt_report(const char *who) {
         who, t[0], r[0], t[1], r[1], t[2], r[2]);
 }
 
+// Game packet gaps, for the log: Pia's connection check ends a session after a few seconds without packets, with
+// nothing from this layer, and the game says "Connection lost". These say which way the packets stopped: the game
+// sending none (its loop stalled: a long load, a hitch) or none arriving. rx by node (a station: [0] = the host).
+#define GAP_LOG_NS 2000000000ull
+static uint64_t gap_tx, gap_rx[MAX_NODES];
+static void gap_note(uint64_t *last, const char *what, int node) {
+    uint64_t now = plat_now_ns(), prev = __atomic_exchange_n(last, now, __ATOMIC_RELAXED);
+    if (!prev || now - prev < GAP_LOG_NS) return;
+    if (node < 0) LOG("[ldn] the game sent no packets for %.1f s\n", (double)(now - prev) / 1e9);
+    else LOG("[ldn] %s%.0d: no packets for %.1f s\n", what, node, (double)(now - prev) / 1e9);
+}
+static double gap_since(const uint64_t *last) {
+    uint64_t t = __atomic_load_n(last, __ATOMIC_RELAXED);
+    return t ? (double)(plat_now_ns() - t) / 1e9 : -1;
+}
+
 static Hello make_hello(bool scan_only, const uint8_t *user_name, uint16_t version) {  // version: the host's (see PROTO_MIN)
     Hello h = {0};
     memcpy(h.magic, PROTO_MAGIC, 4);
@@ -710,11 +762,12 @@ static void ryu_xmit(const VPacket *p, const void *data, uint32_t len) {
 
 void ldn_send(const VPacket *p, const void *data, uint32_t len) {
     if (L.ryu || L.room) { if (ldn_net_up()) ryu_xmit(p, data, len); return; }
-    if (L.state == ST_AP_CREATED) { host_route(0, p, data, len); return; }
+    if (L.state == ST_AP_CREATED) { gap_note(&gap_tx, NULL, -1); host_route(0, p, data, len); return; }
     if (L.state != ST_STATION_CONNECTED) return;
     bool all = p->dst_ip == ldn_broadcast_ip() || p->dst_ip == 0xFFFFFFFFu;
     if (all || p->dst_ip == L.own_ip) vsock_deliver(p, data, len);  // (a broadcast reaches the sender too)
     if (p->dst_ip == L.own_ip) return;
+    gap_note(&gap_tx, NULL, -1);
     hsock us = L.us;
     if (us != BADSOCK && direct_usable(&L.up) && udp_send(us, &L.up.paddr, &L.up, false, U_DATA, 0, p, data, len)) {
         pkt_count(pkt_tx, PATH_DIRECT);
@@ -785,6 +838,7 @@ static void link_received(int from, const VPacket *p, const void *data, uint32_t
             LOG("[ldn] MHGU_LDN_LOSS: dropping %d%% of the received packets\n", loss_pct);
         }
     }
+    if (from >= 0 && from < MAX_NODES) gap_note(&gap_rx[from], from ? "node " : "the host", from);
     if (loss_pct && (int)(arc4random() % 100) < loss_pct) return;
     if (lag_ms <= 0) {
         if (from > 0) host_route(from, p, data, len);
@@ -911,7 +965,8 @@ static void *station_thread(void *arg) {
     }
     l->has_thread = false;
     pthread_mutex_unlock(&L.mu);
-    LOG("[ldn] node %d (%s) left\n", slot, ipstr(l->ip));
+    LOG("[ldn] node %d (%s) left (its last game packet %.1f s ago)\n", slot, ipstr(l->ip), gap_since(&gap_rx[slot]));
+    __atomic_store_n(&gap_rx[slot], 0, __ATOMIC_RELAXED);
     vsock_peer_gone(l->ip);
     signal_change();
     return NULL;
@@ -1212,7 +1267,7 @@ static void code_new(char *out) {
 static void *lobby_thread(void *arg) {
     uint32_t gen = (uint32_t)(uintptr_t)arg;
     static __thread uint8_t buf[MAX_FRAME];
-    uint8_t req[LOBBY_HEADER + NETINFO_SIZE + CODE_LEN], type;
+    uint8_t req[LOBBY_HEADER + NETINFO_SIZE + CODE_LEN], type = 0;
     bool with_code = true;  // false: the server is older than version 4 (it took the HOST only without a code)
     int taken = 0;          // codes refused as taken in a row (a new one is tried at once, 3 times)
     while (lobby_gen == gen) {
@@ -1223,14 +1278,23 @@ static void *lobby_thread(void *arg) {
         bool named = resolve_host(srv, LOBBY_PORT, &addr);
         if (named) s = connect_to(&addr, 3000);
         if (s == BADSOCK) {
-            LOG("[ldn] hub server %s %s: this hub is not listed online (trying again in 30 s)\n", srv,
-                named ? "unreachable" : "not found");
+            LOG("[ldn] hub server %s %s%s: this hub is not listed online (trying again in 30 s)\n", srv,
+                named ? "unreachable at " : "not found", named ? inet_ntoa(addr.sin_addr) : "");
             if (lobby_gen == gen) hub_report(NOTE_HOST, srv, named ? HUB_UNREACHABLE : HUB_NOT_FOUND, -1, -1);
             if (!lobby_wait(gen, 30000)) break;
             continue;
         }
         bool keyed = lobby_header(req, NULL);
         pthread_mutex_lock(&L.mu);
+        // (the network may have closed while we connected - Hunter Search closes one every ~10 s: lobby_host_stop
+        // moves lobby_gen on before it clears the code under L.mu, so this sees one or the other. A listing of a closed
+        // network, or one without its code, is never sent: the server takes a protocol 4 listing without a code for a
+        // game that only claims 4.)
+        if (lobby_gen != gen || (with_code && !L.code[0])) {
+            pthread_mutex_unlock(&L.mu);
+            hclose(s);
+            break;
+        }
         memcpy(req + LOBBY_HEADER, L.info, NETINFO_SIZE);
         memcpy(req + LOBBY_HEADER + NETINFO_SIZE, L.code, CODE_LEN);
         bool coded = with_code && L.code[0];
@@ -1256,8 +1320,8 @@ static void *lobby_thread(void *arg) {
                 LOG("[ldn] hub server %s is older than this game: the hub is listed without a session code\n", srv);
                 continue;
             }
-            LOG("[ldn] hub server %s: can't list this hub (%s); trying again in 30 s\n", srv,
-                error ? lobby_error(code) : "no answer");
+            LOG("[ldn] hub server %s (%s): can't list this hub (%s%s); trying again in 30 s\n", srv,
+                inet_ntoa(addr.sin_addr), error ? lobby_error(code) : "no answer: ", error ? "" : reply_why(n, type, asked));
             if (lobby_gen == gen) hub_report(NOTE_HOST, srv, error ? lobby_state(rd32(buf)) : HUB_NO_ANSWER, -1, -1);
             if (!lobby_wait(gen, 30000)) break;
             continue;
@@ -1334,6 +1398,7 @@ typedef struct {
     int n, state, ms;
     struct sockaddr_in addr;
     char server[LOBBY_NAME];
+    char why[136];  // HUB_NO_ANSWER: the address asked and what came instead (reply_why)
 } LobbyList;
 
 // A HUBS (u64 id, NetworkInfo each) or HUBS4 (u64 id, u16 link version, code[8], NetworkInfo) answer into r. A server
@@ -1363,11 +1428,14 @@ static void lobby_hubs(const uint8_t *buf, int n, uint8_t type, LobbyList *r) {
 
 static int lobby_list(const char *srv, const char *key, int connect_ms, LobbyList *r) {
     static __thread uint8_t buf[MAX_FRAME];
-    r->n = 0, r->ms = -1;
+    r->n = 0, r->ms = -1, r->why[0] = 0;
     if (!resolve_host(srv, LOBBY_PORT, &r->addr)) return HUB_NOT_FOUND;
     hsock s = connect_to(&r->addr, connect_ms);
-    if (s == BADSOCK) return HUB_UNREACHABLE;
-    uint8_t req[LOBBY_HEADER], type;
+    if (s == BADSOCK) {
+        snprintf(r->why, sizeof r->why, "at %s", inet_ntoa(r->addr.sin_addr));
+        return HUB_UNREACHABLE;
+    }
+    uint8_t req[LOBBY_HEADER], type = 0;
     lobby_header(req, key);
     hset_timeout(s, 2000);
     uint64_t asked = plat_now_ns();
@@ -1375,7 +1443,10 @@ static int lobby_list(const char *srv, const char *key, int connect_ms, LobbyLis
     r->ms = (int)((plat_now_ns() - asked) / 1000000);
     hclose(s);
     if (n >= 4 && type == S_ERROR) return lobby_state(rd32(buf));
-    if (n < 4 || (type != S_HUBS && type != S_HUBS4)) return HUB_NO_ANSWER;
+    if (n < 4 || (type != S_HUBS && type != S_HUBS4)) {
+        snprintf(r->why, sizeof r->why, "at %s, %s", inet_ntoa(r->addr.sin_addr), reply_why(n, type, asked));
+        return HUB_NO_ANSWER;
+    }
     lobby_hubs(buf, n, type, r);
     return HUB_ONLINE;
 }
@@ -1411,8 +1482,9 @@ static void *lobby_list_thread(void *arg) {
     static int last = HUB_ONLINE;
     r->state = lobby_list(r->server, NULL, 1500, r);
     if (r->state != last && r->state != HUB_ONLINE)
-        LOG("[ldn] hub server %s: %s: only LAN / Join hubs are searched\n", r->server,
-            r->state == HUB_NOT_FOUND ? "not found" : r->state == HUB_UNREACHABLE ? "unreachable" : "no list");
+        LOG("[ldn] hub server %s: %s%s%s: only LAN / Join hubs are searched\n", r->server,
+            r->state == HUB_NOT_FOUND ? "not found" : r->state == HUB_UNREACHABLE ? "unreachable" : "no list",
+            r->why[0] ? ": " : "", r->why);
     last = r->state;
     hub_report(NOTE_SEARCH, r->server, r->state, r->ms, r->state == HUB_ONLINE ? r->n : -1);
     pthread_mutex_lock(&s->mu);
@@ -1478,7 +1550,8 @@ static void *hub_check_thread(void *arg) {
     pthread_mutex_lock(&hub_mu);
     if (hub_now.check == c->check) hub_set_locked(c->server, c->key, state, ms, hubs);
     pthread_mutex_unlock(&hub_mu);
-    LOG("[ldn] hub server check: %s: state %d, %d ms, %d hub(s) for this key\n", c->server, state, ms, hubs);
+    LOG("[ldn] hub server check: %s: state %d, %d ms, %d hub(s) for this key%s%s\n", c->server, state, ms, hubs,
+        r && r->why[0] ? ": " : "", r ? r->why : "");
     free(r);
     free(c);
     return NULL;
@@ -1528,12 +1601,13 @@ static uint32_t lobby_join(const struct sockaddr_in *addr, uint64_t hub, const c
         hub_report(NOTE_JOIN, srv, HUB_UNREACHABLE, -1, -1);
         return R_CONNECT_TIMEOUT;
     }
-    uint8_t req[LOBBY_HEADER + 8 + CODE_LEN], type;
+    uint8_t req[LOBBY_HEADER + 8 + CODE_LEN], type = 0;
     lobby_header(req, NULL);
     memcpy(req + LOBBY_HEADER, &hub, 8);
     bool coded = hub_code && strlen(hub_code) == CODE_LEN;
     if (coded) memcpy(req + LOBBY_HEADER + 8, hub_code, CODE_LEN);
     hset_timeout(s, 12000);  // (the server waits up to 10 s for the host)
+    uint64_t asked = plat_now_ns();
     int n = frame_send(s, S_JOIN, req, coded ? sizeof req : sizeof req - CODE_LEN, NULL, 0) ? frame_recv(s, &type, buf) : -1;
     if (n >= 12 && type == S_SPLICED) {
         *out = s, *pair = rd32(buf), *secret = rd64(buf + 4);
@@ -1541,7 +1615,8 @@ static uint32_t lobby_join(const struct sockaddr_in *addr, uint64_t hub, const c
     }
     hclose(s);
     uint32_t code = n >= 4 && type == S_ERROR ? rd32(buf) : 0;
-    LOG("[ldn] joining through the hub server failed: %s\n", code ? lobby_error(code) : "no answer");
+    LOG("[ldn] joining through the hub server (%s) failed: %s%s\n", inet_ntoa(addr->sin_addr),
+        code ? lobby_error(code) : "no answer: ", code ? "" : reply_why(n, type, asked));
     if (code == SE_NO_ANSWER) {  // (a hub that is gone: the game says so itself)
         int lang = config_language();
         overlay_notice(settings_text(lang, UI_TEXT("Could not join the hub.")),
@@ -2097,13 +2172,16 @@ static void *friends_thread(void *arg) {
         if (!n && !requests) continue;  // (nobody to tell, nobody to hear from)
         if (!lobby_server(srv)) state = HUB_OFF;
         uint8_t req[LOBBY_HEADER + FRIEND_SECRET + 1 + CODE_LEN + 1 + LDN_FRIENDS_MAX * FRIEND_LEN + 1 + 32 + 1 +
-                    FRIENDS_REMOVED_MAX * FRIEND_LEN], type;
+                    FRIENDS_REMOVED_MAX * FRIEND_LEN], type = 0;
         int got = -1;
         struct sockaddr_in addr;
+        char why[160] = "";  // (for the log: why the server can't be asked)
         if (state != HUB_OFF) {
             state = HUB_NOT_FOUND;
+            snprintf(why, sizeof why, ": %s not found", srv);
             if (resolve_host(srv, LOBBY_PORT, &addr)) {
                 state = HUB_UNREACHABLE;
+                snprintf(why, sizeof why, ": unreachable at %s", inet_ntoa(addr.sin_addr));
                 hsock s = connect_to(&addr, 3000);
                 if (s != BADSOCK) {
                     lobby_header(req, NULL);
@@ -2120,11 +2198,22 @@ static void *friends_thread(void *arg) {
                         memcpy(p, removed, (size_t)nremoved * FRIEND_LEN), p += nremoved * FRIEND_LEN;
                     }
                     hset_timeout(s, 4000);
+                    uint64_t asked = plat_now_ns();
                     got = frame_send(s, S_PRESENCE, req, (uint32_t)(p - req), NULL, 0) ? frame_recv(s, &type, buf) : -1;
                     hclose(s);
+                    // (a server older than version 4 hangs up on PRESENCE at once, without a word. Nothing in time, a
+                    // reset or anything else is the way there failing, not the server's age: "unreachable", not "too
+                    // old" - a 0.20.0 player with a flaky connection was told the server was too old)
+                    bool old = got < 0 && io_hung_up && plat_now_ns() - asked < 3000000000ull;
                     state = got >= 1 && type == S_FRIENDS ? HUB_ONLINE
-                          : got >= 4 && type == S_ERROR ? lobby_state(rd32(buf))
-                                                        : HUB_VERSION;  // (an older server hangs up on PRESENCE)
+                          : got >= 4 && type == S_ERROR   ? lobby_state(rd32(buf))
+                          : old                           ? HUB_VERSION
+                                                          : HUB_NO_ANSWER;
+                    if (state == HUB_NO_ANSWER)
+                        snprintf(why, sizeof why, ": no answer at %s: %s", inet_ntoa(addr.sin_addr),
+                                 reply_why(got, type, asked));
+                    else if (state != HUB_ONLINE)
+                        snprintf(why, sizeof why, ": %s", got >= 4 && type == S_ERROR ? lobby_error(rd32(buf)) : "");
                 }
             }
         }
@@ -2132,8 +2221,9 @@ static void *friends_thread(void *arg) {
         int nn = 0;
         pthread_mutex_lock(&friends_mu);
         if (state != F.server_state && (state == HUB_ONLINE || F.server_state == HUB_ONLINE || F.server_state == HUB_UNKNOWN))
-            LOG("[ldn] friends: the hub server %s\n", state == HUB_ONLINE ? "answers" : state == HUB_VERSION
-                ? "doesn't know friends (older than this game)" : "can't be asked now");
+            LOG("[ldn] friends: the hub server %s%s\n", state == HUB_ONLINE ? "answers" : state == HUB_VERSION
+                ? "doesn't know friends (older than this game)" : "can't be asked now",
+                state == HUB_ONLINE || state == HUB_VERSION ? "" : why);
         F.server_state = state;
         int was_req = F.nreq, was_mutual = 0, now_mutual = 0;
         for (int i = 0; i < F.n; i++) was_mutual += F.list[i].mutual && F.list[i].state != LDN_FRIEND_OFFLINE;
@@ -2491,6 +2581,8 @@ static bool host_start(void) {
 
 static void host_stop(uint32_t reason) {  // (caller: not holding L.mu)
     lobby_host_stop();
+    __atomic_store_n(&gap_tx, 0, __ATOMIC_RELAXED);
+    for (int i = 0; i < MAX_NODES; i++) __atomic_store_n(&gap_rx[i], 0, __ATOMIC_RELAXED);
     if (L.hosting) {
         L.hosting = false;
         pthread_join(L.host_th, NULL);
@@ -2647,6 +2739,7 @@ static void station_leave(void) {  // (caller: not holding L.mu)
     L.up.udp_up = false;
     L.up.p_up = L.up.p_known = false;
     L.joined_code[0] = 0;
+    __atomic_store_n(&gap_tx, 0, __ATOMIC_RELAXED), __atomic_store_n(&gap_rx[0], 0, __ATOMIC_RELAXED);
     vsock_network_down();
     friends_poke();
 }
@@ -3587,6 +3680,9 @@ HLE_FUNC("_ZN2nn3ldn14ConnectPrivateERKNS0_13NetworkConfigERKNS0_14SecurityConfi
 
 HLE_FUNC("_ZN2nn3ldn10DisconnectEv", ldn_disconnect) { NTRACE(); LDN_CALL();
     if (L.state != ST_STATION_CONNECTED && L.state != ST_ERROR) { RET(R_INVALID_STATE); return; }
+    if (L.state == ST_STATION_CONNECTED && !L.ryu && !L.room)  // (a menu choice, or Pia's connection check: "Connection lost")
+        LOG("[ldn] the game ended its connection to the host: its last game packet sent %.1f s ago, received %.1f s ago\n",
+            gap_since(&gap_tx), gap_since(&gap_rx[0]));
     if (L.ryu) ryu_stop();
     else if (L.room) room_stop();
     else station_leave();

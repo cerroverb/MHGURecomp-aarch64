@@ -595,16 +595,49 @@ falls back to FIFO and waits for the 60 Hz monitor. With VSync = Off (immediate 
 village at 640x360 runs ~138 fps at a 144 target on the R9 (CPU-bound there). Walking speed checked at 30, 60 and
 ~133 fps (player position 2 s apart: ~355 units each time): normal game speed.
 
-Theory, not tested: Pierce ammo hitting more often at high frame rates. Anything the game counts per update rather
-than by the step behaves differently above 60 (and at 30 the other way). Two likely ways for a piercing shot: (1) a
-per-target hit cooldown counted in updates: at 144 fps it would run out 2.4x sooner in real time, so the shot can
-hit the same hit zones again as it passes through; (2) collision is tested once per update at the shot's new
-position: smaller steps sample its path more finely, so fewer hits are skipped on thin parts. Both mean more hits per
-shot, but only up to the ammo's hit count, so damage would rise towards the most a shot can do rather than without
-bound. Other per-update counters (multi-hit attacks, status ticks) could act the same way. To check later: a save
-with a bowgun and Pierce ammo, the same shots into a still monster at 60 and at 144 fps, and count hits (a hook on
-the damage function, or the damage numbers); the shell data (shell\pl\pl_w<weapon>_<n>\..._hit<n> files,
-rBowgunShellData) would show which field holds the interval. A fix would scale that counter by the step.
+Pierce shots and the frame rate (2026-11-24): fixed. Reported: a Grimclaw Tigrex shot from the front takes 3 Pierce S
+Lv1 hits in its small head at 30 fps (3 x 47), never at 60 fps (47, 47, 31) unless the monster is scaled to 150%. The
+earlier theory here (hits sooner, or sampled more finely, at high rates) was wrong: the hits spread further apart along
+the shot. Measured (scratch-pierce rig, below): the shell (uShellPlw04_000, update 0x66c880) hits every 6 frames of
+60 fps (0.1 s) at any rate, and after each hit a 4-frame timer (+0x15d4, run by the step) slows it to 0.7 of its speed;
+but the update that takes the hit (hit count u16 +0x15d8) holds the shell still for that one update: 2 frames on the
+Switch, 1 at 60 fps, 0.25 at 240. From one hit to the next it flew 2 + 2 x 0.7 frames' worth at 30 fps, 3 + 2 x 0.7 at
+60: 253 against 311 units, so the third hit left the head. Fix (runtime/hle/shellstep.c, runtime only): after that
+update the shell stays still for the rest of the 2 frames (the last update's movement cut by the part of it still in
+the stop). Checked, hit 1 to hit 2 = 3.4 x the shell's speed per frame at 30, 60, 144 and 240 fps (237.9 / 247.9 /
+258.7 / 241.8 units for shells of 70.0 / 72.9 / ~71 / 71.1; 144 lands 1 frame of 0.42 late on the 6-frame gate);
+without it 311 at 60 and 386 at 144. MHGU_NO_SHELLSTEP=1 turns it off, MHGU_LOG_SHELLSTEP=1/2 logs it. A shell's speed
+varies about 2% from shot to shot at any rate (70.0 to 71.8 a frame), and the first hit's place by a few dozen units, so
+one shot's hit list is noisy; the spacing isn't. Not covered: the w04_100 / _101 shell classes (other bowgun ammo,
+their own updates 0x67262c / 0x673930), a 3-head-hit line reproduced (aims -7.55 / -4 / -1 gave head, head, neck or
+head, wing at 30 fps too).
+Follow-up (2026-11-25, reporter built f22f026: 3 x 47 now possible at 60 fps but rare): the shell's age (+0x1378,
+frames flown; +0x137c the value at the update's start) isn't added to by the update that takes a hit, and Pierce's
+critical distance (x1.5: the reporter's 47 against 31, the rig's head 15 / 19 against 10 / 13, the second number of
+each an affinity crit x1.25) goes by it. The fix held the shell's position for the rest of the 2 frames but let its
+age run, so each later hit came 1 frame older per hit before it at 60 fps (ages at the hits 11 / 16 / 21-22 against
+12 / 16 / 20 at 30 fps) and a third hit could leave the window. Now the age is held with it: 12 / 16 / 20 at 60 fps,
+12.1 / 16.3 / 20.6 at 144, +4 per hit at 240 (scratch-pierce run.sh at 1600 cm). Checked and ruled out on the way: a
+swept hit test (the previous position +0x1000 made 4x as far back changed no hit). Not explained: at 240 fps the first
+hit came ~150 units earlier along the shot in both runs (x 1889 / 1843 against 1713-1752 at 30 / 60 / 144), the shot's
+age matching its distance, so most likely the held Tigrex's frozen pose (it is frozen at whatever frame it was in).
+The Bow's Pierce arrows (uShellPlw10_000, update 0x67957c; a Pierce-only bow, uncharged shots) had the same kind of
+bug by another way: no stop on a hit, but a hit sets a timer (+0x15ec, 4 frames from the data, stored as 4 minus the
+step) and the update it runs out in moves the arrow at 0.7 of its velocity (+0x1010, per frame) and sets a 1-frame
+wait (+0x1404, counted down by the step) before the next hit can land. On the Switch that update covers frames 2-4
+after the hit, so hit to hit = 2 + 2 x 0.7 = 3.4 frames of the arrow's speed (measured 3.405), and the next update's
+step of 2 ends the wait at once (hit at frame 4); at 60 fps 3.7 (hit at frame 4); at 240 fps the wait held the hit
+back 3 more updates, to frame 4.75: ~4.5 (258-262 units). The monster's hit list (status +0x444..+0x4f8) only records
+attack numbers, no timer. Fixed in the same file: slowed from frame 2 by the factor last seen, the rest taken back
+when the game's timer runs out, the wait cut by what the Switch's next update would take off it, and the part of an
+update past frame 4 not moved. Measured 3.40 at 60, 144 and 240 fps (the next gap x0.70 as at 30), hits 4 updates
+apart at 60, 10 (4.17 frames) at 144, 16 at 240, 2 at 30 (untouched). Not covered: uShellPlw10_001 (update
+0x67bf88), charged shots, Bow Hunter Arts, whether other shells use +0x1404 the same way. Rig:
+scratch-pierce\brun.sh (the Bow save: X draws, R taps fire; NOHOLD=1 FIRE=10 CHARGE=0.1), gaps.sh prints hit-to-hit
+distance over the arrow's speed. The rig (outside the repo):
+C:\MHGURecompile\scratch-pierce\run.sh <tag> <fps>: quest 605 (Tigrex by the Tail) area 1, MHGU_DUMMY=1200 facing,
+MHGU_DUMMY_SCALE=1.0 (the quest's size roll, 0.82-0.96 seen, at object +0x60), MHGU_DUMMY_AIM (aim pitch, player
++0x14b8), MHGU_LOG_SHOTPOS (hitsync.c); a Heavy Bowgun: L + X selects Pierce S Lv1, R held aims, X reloads, A fires.
 
 Monster AI and the frame rate (2026-10-25): measured, no difference. f_276154(monster, group, index, flag) starts an
 enemy's new action (stores it at monster +0x73e0, sends it to the other players) for small and large monsters alike;
@@ -755,6 +788,36 @@ shared 0x277114 (heading) and 0x2c2864 (root motion), both stepped; his own unsc
 0x107d9c8, 0x1079b00, 0x1079da8) are one-off offsets when a motion starts. Not covered: actions the sweep plays with
 the hunter straight ahead, so a bite that homes in on a hunter at its side was not seen turning; enraged vs calm
 variants were not told apart.
+
+Hellblade Glavenus' tail slam (2026-11-25): no frame-rate difference found. Reported (the Pierce reporter, recomp at 60
+fps, a GIF): in the black-tail state, the overhead tail slam (rears back, pivots ~90 degrees, tail down beside the
+hunter) "loses its hit"; players also say Glavenus misses this slam slightly now and then on its own. Rig
+(C:\MHGURecompile\scratch-glav, run.sh <tag> <fps>): Hub quest 41201 can't start from the Village (0x2125b8 crash),
+so the scratch-qlist save goes to the Hunters' Pub (X, RIGHT, A, DOWN, A) and `depart 41201` from there;
+MHGU_START_AREA=1, MHGU_SUMMON=1200, MHGU_EMTRACE=2. New debug aids: MHGU_EMACT_PLACE="<cm>_<deg>;..." puts the monster
+that far from the hunter, the hunter that many degrees off its facing, before each emact (cycling the list); the
+[em] trace has the hunter's x z ("pl"); emact logs the monster's status block and scale (+0x60); MHGU_SUMMON logs
+"hunter hit" when the hunter lost HP (not the game's resets of HP to its maximum, +0x13d8). The slam is 7:82
+(2.9 s; two variants: ~240 units with a turn of up to ~50 degrees, or ~900 straight on). All 24 group 7 actions last
+the same at 30 and 240 fps. Moves first seemed 7% shorter at 60 / 240 fps (7:82 straight: 944 against 882), but
+that was the quest's random size: 7:82 at 900 cm straight on, 30 fps scale 1.177 path 942, 60 fps scale 1.133 path
+907, 800.3 / 800.5 per unit of scale; turns 24.8 / -10.9 against 24.8 / -10.4. Position writers (interpwatch): the
+motion's root motion 0x271e70 (from 0xb52c38), copied to status +0x40 at 0x2c2864, then the slope factor 0x4330b8
+(max(1 + dot(move dir, slope) * k, 0.1), direction only).
+Hits on the hunter, same day (follow-up report: "melee hit detection disappears for some monsters"): no difference.
+One run (same monster size) alternating 30 and 240 fps live (control "fps") between attempts, each from the same start
+(MHGU_EMACT_PLACE), hunter pinned with MHGU_SUMMON_HP=max (topped up to its own maximum, +0x13d8, every update; each
+loss below it logged as a hit; the default 5000 left the HUD's bar empty and hid most hits). Real hits only (more
+than 2 HP: Hellblade's fireblight ticks 2 every 0.67 s), 100 ms or more into the attempt: 7:15 (a tail attack)
+15/28 at 30 fps, 16/28 at 240; 7:82 (the slam) 16/28 and 17/28; 7:13 8/8 and 7/8; 7:20 8/8 and 8/8 with the same
+damage at the same times. A first small run (8 each) looked like fewer tail hits at 240 (3/8, 4/8): chance, gone with
+20 more each (9/20 vs 13/20, 10/20 vs 13/20). Hunter attacks for comparison: the attack object (0x368960 sets it up;
+player +0x3020) has +0x5c / +0x60 = frames to open / open, as floats from its data, counted down by the step (seen at
+240 fps: 10.0 down to -0.026, no whole numbers). Monster attacks don't go through 0x368960 (its callers: 0x4b737c,
+hunter; 0x1337300, kind 3) nor through 0x370968 against the hunter (MHGU_LOG_PLHITS=1 in hitsync.c logged none while
+the hunter lost HP); their timing wasn't traced, only measured as above. Scripts: scratch-glav run_fps.sh (ACTS,
+STARTS, REPS, GAP), hits2.py. Not covered: the black-tail state (the quest's Glavenus had its tail glowing from the
+start in every run), other monsters, 60 fps (only 30 and 240), the reporter's own setup.
 
 Start in an area (2026-11-18, debug, runtime/hle/quickhunt.c): MHGU_START_AREA=<n> starts every hunt in area n of its map, by replacing the area the random start picked (town +0xc9, copied to sGameControl +0x49 by the town's move 0x8bdfd0 when departing) for low rank's camp too. With MHGU_QUICKHUNT=<quest>, straight from start-up into that area, e.g. MHGU_QUICKHUNT=204 MHGU_START_AREA=8 (Harvest Tour: Arctic Ridge). Checked on that: the game's pick was area 0, the hunter arrived on the snowfield of area 8 ("hunter in area 8" in the camera trace). An area number the map doesn't have is not checked. Not a teleport: it only acts when departing.
 
@@ -1428,6 +1491,64 @@ old way while on.
   tail-call threaded ops (each handler jumping to the next) might give another ~1.5x; matching an emulator would take a
   JIT (AArch32 -> x86-64 and -> AArch64), a project of its own.
 
+## Interpreter: JIT on x86-64 and AArch64 (2026-11-24)
+
+Report: every loading screen slow with MHGU Definitive Edition 3.1.0 (MH4U Port renamed; now 15 monster entries).
+Its quest_group_fix hook (quest_group_rename, module/quest.c, the quest list loader step 0x3b7de8: every list entry
+against every monster's 12 slots, ~2 M instructions a call, ~1000 calls a town load, ~2.2 G instructions in all) made
+the town's load (title -> town, quickhunt) 18.6 s without the mod -> 23.5 s with it, 18.9 s with only that patch
+taken out of the IPS. A fix is the mod's (slot pairs made once, an ID range check first: a PR to its author). Since
+bigger code mods will come, the interpreted code now runs as x86-64 code (runtime/interp_jit.h, included by interp.c;
+runtime/jit_mem.c the executable memory):
+- Blocks are interp.c's (block_build's rules, the same decode_op), translated: data processing (every shift form;
+  register-specified shifts unless their carry is needed), MOVW / MOVT, every LDR / STR / LDRB / STRB / LDRH / STRH /
+  LDRSB / LDRSH / LDRD / STRD addressing mode, LDM / STM, B / BL / BX / BLX, MUL / MLA / MLS / UMULL / SMULL / UMLAL /
+  SMLAL, CLZ, SXTB / SXTH / UXTB / UXTH (+ add), REV, UBFX / SBFX / BFI / BFC, conditions. Anything else (VFP, NEON,
+  SVC, exclusives, MRS / MSR ...) is a call from the block to the interpreter's own op for it. All state stays in the
+  Cpu (registers, 0 / 1 flag words) as before, so the two mix freely. Baseline x86-64 only (no LZCNT / BMI).
+- jit_run is interp_run_inner's loop around them. A direct branch's exit is patched into a jump to its target's block
+  once the loop has found the target interpreted (chaining), after a check of the run's return address (it ends the
+  run, as in the interpreter) and, going backward, of g_code_gen; indirect branches go back to the loop. Each block
+  compares its guest words on entry (as each op did) and is rebuilt when one changed; the old one jumps to the new.
+- Per thread: an 8 MiB arena (freed at thread exit), started over when full or for a new code generation, but only
+  while none of the thread's blocks is running (a nested run then uses the interpreter). Windows: the arena has a
+  function table entry (one frame layout), so ExitThread's longjmp unwinds through a block (tested: without it, a
+  crash).
+- Bad accesses: gchk's checks with g_ip_pc set, except for sp-based ones; g_ip_last is the block's first instruction.
+  Flags are read back a byte at a time: a dword load of a byte SETcc just stored stalls (no store forwarding), which
+  first made it only 2.3x the interpreter, then 5.4x after that change.
+- Measured (Ryzen 7 9800X3D, testsave/save_0, quickhunt, two runs each): title -> town 18.6 s without the mod, 23.5 s
+  with it interpreted, 19.2 s with the JIT. The quest list thread 21 -> 1.1 Gcycles (~0.5 cycles an instruction). In a
+  hunt with the Stygian Zinogre quest (1023) the mod's code 82 -> 36 ms a second (callees included), the same
+  instruction counts. Forge plugins (KatLib, KatSmithy in the second plugin region, KatEquipmentBox, Ninja Style,
+  key-quest-markers, better-inputs, NoFlinch) together with the mod: no faults, plugin logs the same.
+- Checked: tools/test_lift.py --jit (each instruction as a block of its own) against Unicorn, 4000-instruction runs on
+  four seeds of main: none different (a planted ADD -> SUB was caught at once); a JIT vs interpreter-op comparison on
+  random states, Windows and Linux (archlinux WSL, the System V calls), 18000 runs: none different.
+- MHGU_JIT=0: the interpreter alone. MHGU_JIT_DUMP=<file>: every block's code (for a disassembler, with MHGU_SAMPLE).
+- Not done: registers kept in host registers across a block (the next big step if a mod needs it); not tried on a
+  laptop CPU or by hand in a fight.
+
+AArch64 back end (2026-11-24, same day): Android phones (and AArch64 Linux) get the JIT too. interp_jit.h is now the
+shared part (arena, blocks, run loop); interp_jit_x64.h and interp_jit_a64.h emit the code, the same translations
+one for one. AArch64 notes: AArch32's condition codes and carry are AArch64's, so ADDS / SUBS / ADCS / SBCS leave the
+guest's NZCV in the host's flags (CSET stores them, a byte each); guest memory is [x20, wN, uxtw]; a block's words
+are checked against a literal pool after it, two at a time; written or patched code gets an instruction cache flush;
+x18 is left alone. Not on Apple hosts (MAP_JIT and write protection per thread: for the Mac port); a device that
+refuses RWX memory keeps the interpreter (jit_tls, logged).
+- Also fixed in both: LDM / STM / LDRD / STRD stepped their addresses in 64 bits (a block near the top of the 4 GB
+  window ran past it); each word's address now wraps at 32 bits as the guest's.
+- Checked: tools/test_jit.py (new: tools/test_jit.c), the JIT against the interpreter: `words`, instruction words of
+  main as blocks of their own on random states (registers, flags, VFP, memory), and `prog`, whole runs from main's
+  function entries on random registers and memory, forked, once interpreted and once JITted, results compared (Linux).
+  --a64 cross-builds with clang + the aarch64-linux-gnu sysroot and runs under qemu-aarch64; --wsl archlinux from
+  here (pacman: aarch64-linux-gnu-gcc, qemu-user). AArch64: 18000 word runs and 700 whole runs, none different (a
+  planted ADD -> SUB gave 1991 differences); x86-64 (Windows, Linux): the same, and 1100 whole runs with one
+  difference, explained: random pointers had a loop store into its own block (the interpreter checks each word before
+  it runs, a block its words on entry). Android x86_64 in the emulator: the JIT runs (Definitive Edition, town and
+  quest 1023). The arm64 APK can't be tried there: the emulator's arm64 translation (berberis) aborts on the game's
+  first SIGSEGV with or without the JIT ("Cannot process signal 11"), so a real phone is the open check.
+
 ## Even letter spacing in the game's text: [Graphics] FixKerning (2026-11-07)
 
 - The UI text (cGUI, font_festa.gfd) looked unevenly spaced, on the console too. Three causes, all fixed with
@@ -1559,6 +1680,34 @@ old way while on.
   resources couldn't be reflected, and FidelityFX's own messages (MHGU_FSR_DEBUG=1), which went to stderr with
   fwprintf before and so never reached log.txt or logcat. The Makefile now rebuilds the FSR C++ objects when those
   forced headers change (header dependencies aren't tracked). Next: that log from the reporter.
+
+## Steam Deck: terrain flickering black in Deserted Island area 6 (issue #232, fixed 2026-11-25)
+
+- Symptom (RADV only: Steam Deck, Mesa 26.0.0-devel VANGOGH): terrain and its decals, sometimes parts of monsters,
+  flicker black for a frame, two or three times every few seconds. Either a square around the hunter or everything but
+  that square: one shadow cascade at a time. Needs shadow casters at ground level: small monsters in the area (it
+  stopped when they died), and more of it once area 6's breakable rock has sunk into the ground. It keeps going on the
+  pause screen. Repro: MHGU_QUICKHUNT=837 (The Way of the Nargacuga, Village high rank) MHGU_START_AREA=6, no monster
+  debug options (MHGU_SUMMON pins the hunter in place).
+- Debugged live on the user's Deck over SSH (the game started by `systemd-run --user` with a scratch MHGU_HOME and save,
+  driven through MHGU_CONTROL). Screenshots, bursts (up to 300 frames) and pass dumps never caught it.
+- Ruled out on the Deck: fast clears, DCC and HiZ (RADV_DEBUG=nofastclears / nohiz; early runs without them looked
+  clean only because the rock wasn't broken yet), colour and depth clears done as draws, zeroing of new images, FXAA,
+  FMZ (0 x Inf) on every fragment-shader multiply, the depth bias representation alone (D24 steps for decals vs. the
+  default for the terrain, PR 235), and waiting for the GPU after each frame or each submission.
+- RADV_DEBUG=syncshaders (idle after every draw) hid it: a race between draws inside one render pass, where the port
+  puts no barriers. Bisected with temporary barrier modes, toggled live in the same flickering pause screen: a new
+  pass (full barrier) before every draw hid it; before only the draws that sample rendered textures didn't; only in
+  depth-only passes did, only in colour passes didn't; only where the polygon offset or polygon state (st.poly:
+  offset enable, culling, winding) differs from the draw before did, and in depth-only passes alone too. Sending all
+  pipeline and dynamic state again at those draws without a barrier didn't. Each result checked by switching back.
+  Likely a RADV bug: depth bias changes between draws of a depth-only pass (the shadow cascades, the depth pre-pass)
+  should not need a barrier.
+- Workaround (g_vk.bias_sync, device.c / exec.c draw): on RADV (driverID MESA_RADV), in a depth-only pass, a draw whose
+  polygon offset or polygon state differs from the draw before starts a new render pass behind a full barrier.
+  MHGU_VK_BIAS_SYNC=1 / 0 turns it on / off on any driver. Cost on the Deck (paused in area 6, gpuprof): GPU busy
+  5.34 -> 5.92 ms a frame, 60 fps unchanged. Off on the R9 (AMD's Windows driver). Checked on the Deck: rock broken,
+  small monsters around, the pause screen: no flicker.
 
 ## Next steps
 1. Modding tools: decode resident.arc tables (weapon00..14 Base/Level data: record layouts derivable from the game
@@ -1784,6 +1933,18 @@ being a submodule there is 1.92.8 by its header only).
 Extras beyond Fexty's exported.txt, kept as harmless: forge_log_trace(format, ...) (printed at any level, as [DEBUG]), forge_graphics_isInitialized, forge_graphics_isMenuOpen. MHGU_FORGE_LOG=debug|info|warn|error (default info; overrides the file when it names a level). Install = the mod's folder in mods\ (Forge itself is not needed). Log: "[forge] plugin ...",
 the plugin's own messages as "[forge] [INFO] ..." (Forge's tags). Plugins are built -mfloat-abi=softfp, as
 Forge is: floats in core registers (forge_onUpdate's dt in r0; until 2026-10-23 it went in s0 only).
+
+Save commits from plugins (2026-11-24): nn::fs aborts a commit while any file of the save is open for writing (2002-6457,
+WriteModeFileNotClosed). Plugins commit the save on the main thread (forge_fs_unmountSaveData always commits, as Forge's
+does; plugins that keep settings in the save also call CommitSaveData themselves, some every few seconds), and the game
+writes its save on another thread: a player with 15 plugins had the game close at the end of a hunt. Reproduced with a
+plugin committing every frame and the game saving (Quit Game > Save). FileSystemAccessor::Commit now has a host layer
+(services/fs.c, commit_guard) that waits, up to 10 s, until no other thread has a save file open for writing (by the
+SDK's own open-file list and the host's), and save files opened for writing by other threads wait while it commits; a
+thread's own open file is not waited for (nn::fs aborts as on the console). A wait is logged ("[fs] a save commit ...
+waited N ms ..."; 17-19 ms in the test). MHGU_NO_COMMIT_GUARD=1 turns it off. Every abort also logs the files open for
+writing and those closed in the last 5 s (path, guest thread, the game's and plugins' calls that opened them), plugins'
+files from forge_fs_openFile still open, and Forge plugins' code on the stack.
 
 Forge 2.0.0 (2026-11-19; was 1.5.1, the same API plus what 2.0.0 adds): the port reports 2.0.0, so plugins asking for 2.0
 start (1.x ones still do). Files: forge_fs_openFile(path, mode, u32 *handle) / getFileSize / readFile(handle, s64 offset, buf,

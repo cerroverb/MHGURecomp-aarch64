@@ -257,7 +257,24 @@ static void report_send(const Snap *s, uint32_t en, uint32_t info, int slot, boo
     if (g_log) LOG("[hitsync] %s %u sent: monster %u, damage %d, KO %d, aggro %d\n", shot ? "shot" : "report", r.seq, r.id, d, r.parts[(0x4d2 - P_PARTS) / 2], r.aggro);
 }
 
+static bool g_shotpos;  // (debug) MHGU_LOG_SHOTPOS=1: every bow / bowgun shell hit logged with the shell's position
+
+static bool g_plhits;  // (debug) MHGU_LOG_PLHITS=1: every attack this game runs against our own hunter logged
+
 static void hit(Cpu *c) {
+    if (g_plhits) {
+        uint32_t gc = LD32(0x1a8ca48u), sp = LD32(0x1a85b58u), slot = gc ? LD32(gc + 0x30) : 4;
+        uint32_t pl = sp && slot < 4 ? LD32(sp + 0x1c + 4 * slot) : 0, at = c->r[1];
+        if (pl && c->r[2] == pl)
+            LOG("[plhit] attack %08x by %08x kind %u type 0x%x number %u, words %08x %08x %08x %08x\n", at, LD32(at + AT_OWNER),
+                LD8(at + AT_KIND), LD8(at + AT_TYPE), LD16(at + 0x34), LD32(at + 0x30), LD32(at + 0x34), LD32(at + 0x38), LD32(at + 0x3c));
+    }
+    if (g_shotpos) {
+        uint32_t at = c->r[1], p, s = LD32(at + AT_OWNER);
+        if (LD8(at + AT_VIA) && shot_of(at, &p))
+            LOG("[shotpos] shell %08x at %.1f %.1f %.1f, target %08x, age %.3f %.3f\n", s, (double)LDF(s + 0x40), (double)LDF(s + 0x44),
+                (double)LDF(s + 0x48), c->r[2], (double)LDF(s + 0x1378), (double)LDF(s + 0x137c));
+    }
     if (!active()) { fnhook_call_original(c, FN_HIT); return; }
     uint32_t at = c->r[1], en = c->r[2], info, player;
     if (LD8(at + AT_KIND) != KIND_HUNTER || !large(en, &info)) { fnhook_call_original(c, FN_HIT); return; }
@@ -487,6 +504,8 @@ static void hit_trace(Cpu *c) {
 
 void hitsync_init(void) {
     g_log = getenv("MHGU_LOG_HITSYNC") && atoi(getenv("MHGU_LOG_HITSYNC"));
+    g_shotpos = getenv("MHGU_LOG_SHOTPOS") && atoi(getenv("MHGU_LOG_SHOTPOS"));
+    g_plhits = getenv("MHGU_LOG_PLHITS") && atoi(getenv("MHGU_LOG_PLHITS"));
     const char *e = getenv("MHGU_HITSYNC_DIFF");
     if (e && *e && atoi(e)) {
         fnhook_set(FN_HIT, hle_register("hitsync:trace", hit_trace));
